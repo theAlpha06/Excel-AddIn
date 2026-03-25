@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { mergeStyles } from "@fluentui/react";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import { useOfficeContext } from "./hooks/useOfficeContext";
@@ -11,6 +12,15 @@ const App = () => {
     const [orgType, setOrgType] = useState(null);
     const { isOfficeReady, officeError } = useOfficeContext();
     const { setUser } = useAuth();
+
+    const errorMessageStyles = mergeStyles({
+        padding: '20px',
+        color: 'red',
+    });
+
+    const loadingMessageStyles = mergeStyles({
+        padding: '20px',
+    });
 
     useEffect(() => {
         if (isOfficeReady) {
@@ -65,11 +75,11 @@ const App = () => {
     };
 
     if (officeError) {
-        return <div style={{ padding: '20px', color: 'red' }}>Error: {officeError}</div>;
+        return <div className={errorMessageStyles}>Error: {officeError}</div>;
     }
 
     if (!isOfficeReady) {
-        return <div style={{ padding: '20px' }}>Loading Office context...</div>;
+        return <div className={loadingMessageStyles}>Loading Office context...</div>;
     }
 
     return (

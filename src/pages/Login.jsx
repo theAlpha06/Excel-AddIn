@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ChoiceGroup, DefaultButton } from "@fluentui/react";
+import { ChoiceGroup, DefaultButton, mergeStyles } from "@fluentui/react";
 import { useOfficeContext } from "../hooks/useOfficeContext";
 
 const Login = ({orgType, setOrgType}) => {
@@ -7,6 +7,27 @@ const Login = ({orgType, setOrgType}) => {
     const [error, setError] = useState(null);
     const [dialog, setDialog] = useState(null);
     const { isOfficeReady } = useOfficeContext();
+
+    const loginContainerStyles = mergeStyles({
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        padding: '20px',
+    });
+
+    const choiceGroupWrapperStyles = mergeStyles({
+        marginBottom: '20px',
+        minWidth: '300px',
+    });
+
+    const errorDivStyles = mergeStyles({
+        marginBottom: '20px',
+        color: 'red',
+        fontSize: '14px',
+        fontWeight: '500',
+    });
 
     const options = [
         { key: 'sandbox', text: 'Sandbox' },
@@ -112,8 +133,8 @@ const Login = ({orgType, setOrgType}) => {
     };
     
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh' }}>
-            <div style={{ marginBottom: '20px' }}>
+        <div className={loginContainerStyles}>
+            <div className={choiceGroupWrapperStyles}>
                 <ChoiceGroup
                     selectedKey={orgType}
                     options={options}
@@ -121,7 +142,7 @@ const Login = ({orgType, setOrgType}) => {
                     label="Select Organization"
                 />
             </div>
-            {error && <div style={{ marginBottom: '20px', color: 'red' }}>{error}</div>}
+            {error && <div className={errorDivStyles}>{error}</div>}
             <div>
                 <DefaultButton
                     text="Connect to Salesforce"
