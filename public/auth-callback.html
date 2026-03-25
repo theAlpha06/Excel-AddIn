@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Salesforce Authentication Callback</title>
+    <script type="text/javascript">
+        window.onload = function() {
+            var hash = window.location.hash.substring(1);
+            var params = {};
+            
+            hash.split('&').forEach(function(pair) {
+                var parts = pair.split('=');
+                params[parts[0]] = decodeURIComponent(parts[1]);
+            });
+            
+            if (params.access_token && params.instance_url) {
+                try {
+                    var message = {
+                        access_token: params.access_token,
+                        instance_url: params.instance_url
+                    };
+                    
+                    if (window.opener) {
+                        window.opener.postMessage(JSON.stringify(message), "*");
+                    } else {
+                        if (window.Office && Office.context.ui) {
+                            Office.context.ui.messageParent(JSON.stringify(message));
+                        }
+                    }
+                    
+                    document.getElementById('status').textContent = 'Authentication successful! You can close this window.';
+                    document.getElementById('status').className = 'success';
+                    
+                    setTimeout(() => {
+                        window.close();
+                    }, 100);
+                } catch (error) {
+                    document.getElementById('status').textContent = 'Error sending token: ' + error.message;
+                    document.getElementById('status').className = 'error';
+                    console.error('Error in callback handler:', error);
+                }
+            } else if (params.error) {
+                document.getElementById('status').textContent = 'Authentication failed: ' + params.error;
+                document.getElementById('status').className = 'error';
+                
+                try {
+                    if (window.Office && Office.context.ui) {
+                        Office.context.ui.messageParent(JSON.stringify({ error: params.error }));
+                    }
+                } catch (e) {
+                    console.error('Error sending error message:', e);
+                }
+            } else {
+                document.getElementById('status').textContent = 'No token found in URL';
+                document.getElementById('status').className = 'error';
+            }
+        };
+    </script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-align: center;
+            margin-top: 50px;
+            background-color: #f9f9f9;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #0078d4;
+        }
+        #status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #dff6dd;
+            color: #107c10;
+        }
+        .error {
+            background-color: #fde7e9;
+            color: #a80000;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Salesforce Authentication</h1>
+        <p id="status">Processing authentication...</p>
+    </div>
+    
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js" type="text/javascript"></script>
+</body>
+</html>

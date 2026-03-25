@@ -20,7 +20,8 @@ module.exports = async (env, options) => {
         import: ["./src/index.jsx", "./src/taskpane/taskpane.html"],
         dependOn: "react",
       },
-      commands: "./src/commands/commands.js"
+      commands: "./src/commands/commands.js",
+      authcallback: "./public/auth-callback.html"
     },
     output: {
       clean: true,
@@ -56,6 +57,10 @@ module.exports = async (env, options) => {
         filename: "taskpane.html",
         template: "./src/taskpane/taskpane.html",
         chunks: ["polyfill", "taskpane", "react"],
+      }),
+      new HtmlWebpackPlugin({
+        filename: "auth-callback.html",
+        template: "./public/auth-callback.html"
       }),
       new CopyWebpackPlugin({
         patterns: [
