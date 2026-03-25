@@ -47,7 +47,6 @@ const Login = ({orgType, setOrgType}) => {
     const REACT_APP_REDIRECT_URI="https://localhost:3000/auth-callback.html";
 
     const processMessage = (message) => {
-        console.log("Message received from dialog:", message);
         if (dialog) {
             dialog.close();
         }
@@ -67,7 +66,6 @@ const Login = ({orgType, setOrgType}) => {
                     }
                 });
             } catch (error) {
-                console.error("Error processing authentication message:", error);
                 setError(`Error processing authentication response: ${error.message}`);
             }
         } else {
@@ -76,7 +74,6 @@ const Login = ({orgType, setOrgType}) => {
     };
 
     const processDialogEvent = (message) => {
-        console.log("Dialog event:", message);
         if (dialog) {
             dialog.close();
         }
@@ -85,13 +82,11 @@ const Login = ({orgType, setOrgType}) => {
     const startOAuth = async () => {
         if (!isOfficeReady) {
             setError("Office context is not ready. Please wait for the add-in to initialize.");
-            console.error("Office context is not ready");
             return;
         }
 
         if (typeof Office === 'undefined' || !Office.context || !Office.context.ui) {
             setError("Office API is not available.");
-            console.error("Office.context.ui is not available");
             return;
         }
 
@@ -126,7 +121,6 @@ const Login = ({orgType, setOrgType}) => {
                 }
             );
         } catch (error) {
-            console.error("Error starting OAuth flow:", error);
             setError(`Authorization failed: ${error.message}`);
             setIsLoading(false);
         }

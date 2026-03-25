@@ -4,14 +4,16 @@ import Login from "./pages/Login";
 import Home from "./pages/Home";
 import { useOfficeContext } from "./hooks/useOfficeContext";
 import { useAuth } from "./hooks/useAuth";
+import { useLoader } from "./hooks/useLoader";
+import Loader from "./components/Loader";
 
 const App = () => {
-    const [isConnected, setIsConnected] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
     const [orgType, setOrgType] = useState(null);
     const { isOfficeReady, officeError } = useOfficeContext();
-    const { setUser } = useAuth();
+    const { setUser, isConnected, setIsConnected } = useAuth();
+    const { setIsLoading: setGlobalLoading } = useLoader();
 
     const errorMessageStyles = mergeStyles({
         padding: '20px',
@@ -33,10 +35,12 @@ const App = () => {
             if (!isOfficeReady || typeof Office === 'undefined' || !Office.context) {
                 setError("Office context is not ready");
                 setIsLoading(false);
+                setGlobalLoading(false);
                 return;
             }
 
             setIsLoading(true);
+            setGlobalLoading(true);
             await Office.context.document.settings.refreshAsync();
             const accessToken = Office.context.document.settings.get("salesforce_access_token");
             const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
@@ -71,6 +75,7 @@ const App = () => {
             setError("Failed to check connection status");
         } finally {
             setIsLoading(false);
+            setGlobalLoading(false);
         }
     };
 
@@ -83,9 +88,12 @@ const App = () => {
     }
 
     return (
-        <div>
-            {isConnected ? <Home /> : <Login orgType={orgType} setOrgType={setOrgType} />}
-        </div>
+        <>
+            <Loader />
+            <div>
+                {isConnected ? <Home /> : <Login orgType={orgType} setOrgType={setOrgType} />}
+            </div>
+        </>
     );
 }
 
