@@ -74,6 +74,8 @@ const Login = ({orgType, setOrgType}) => {
     };
 
     const processDialogEvent = (message) => {
+        setIsLoading(false);
+        setError("Dialog Box was closed by user");
         if (dialog) {
             dialog.close();
         }

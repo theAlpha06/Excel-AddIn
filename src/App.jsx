@@ -6,95 +6,98 @@ import { useOfficeContext } from "./hooks/useOfficeContext";
 import { useAuth } from "./hooks/useAuth";
 import { useLoader } from "./hooks/useLoader";
 import Loader from "./components/Loader";
+import { handleSheetChange } from "./utils/diff";
 
 const App = () => {
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState(null);
-    const [orgType, setOrgType] = useState(null);
-    const { isOfficeReady, officeError } = useOfficeContext();
-    const { setUser, isConnected, setIsConnected } = useAuth();
-    const { setIsLoading: setGlobalLoading } = useLoader();
+  const [error, setError] = useState(null);
+  const [orgType, setOrgType] = useState(null);
+  const { isOfficeReady, officeError } = useOfficeContext();
+  const { setUser, isConnected, setIsConnected } = useAuth();
+  const { isLoading, setIsLoading } = useLoader();
 
-    const errorMessageStyles = mergeStyles({
-        padding: '20px',
-        color: 'red',
+  const errorMessageStyles = mergeStyles({
+    padding: "20px",
+    color: "red",
+  });
+
+  const loadingMessageStyles = mergeStyles({
+    padding: "20px",
+  });
+
+  useEffect(() => {
+    if (isOfficeReady) {
+      checkConnectionStatus();
+      registerChangeListener();
+    }
+  }, [isOfficeReady]);
+
+  async function registerChangeListener() {
+    await Excel.run(async (context) => {
+      context.workbook.worksheets.onChanged.add(handleSheetChange);
+      await context.sync();
     });
+  }
 
-    const loadingMessageStyles = mergeStyles({
-        padding: '20px',
-    });
+  const checkConnectionStatus = async () => {
+    try {
+      if (!isOfficeReady || typeof Office === "undefined" || !Office.context) {
+        setError("Office context is not ready");
+        setIsLoading(false);
+        return;
+      }
 
-    useEffect(() => {
-        if (isOfficeReady) {
-            checkConnectionStatus();
-        }
-    }, [isOfficeReady]);
+      setIsLoading(true);
+      await Office.context.document.settings.refreshAsync();
+      const accessToken = Office.context.document.settings.get("salesforce_access_token");
+      const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
 
-    const checkConnectionStatus = async () => {
+      if (accessToken && instanceUrl) {
         try {
-            if (!isOfficeReady || typeof Office === 'undefined' || !Office.context) {
-                setError("Office context is not ready");
-                setIsLoading(false);
-                setGlobalLoading(false);
-                return;
+          const response = await fetch("http://localhost:5000/salesforce/check-status", {
+            method: "GET",
+            headers: {
+              "sf-instance-url": instanceUrl,
+              "sf-access-token": accessToken,
+              "Content-Type": "application/json"
+            },
+          });
+          const data = await response.json();
+          if (response.ok && data.status === "connected") {
+            setIsConnected(true);
+            if (data.versions) {
+              setUser(data.versions);
             }
-
-            setIsLoading(true);
-            setGlobalLoading(true);
-            await Office.context.document.settings.refreshAsync();
-            const accessToken = Office.context.document.settings.get("salesforce_access_token");
-            const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
-
-            if (accessToken && instanceUrl) {
-                try {
-                    const response = await fetch("http://localhost:5000/salesforce/check-status", {
-                        method: "GET",
-                        headers: {
-                            "sf-instance-url": instanceUrl,
-                            "sf-access-token": accessToken,
-                            "Content-Type": "application/json",
-                        },
-                    });
-
-                    const data = await response.json();
-                    if (response.ok && data.status === "connected") {
-                        setIsConnected(true);
-                        if (data.versions) {
-                            setUser(data.versions);
-                        }
-                    } else {
-                        // handleLogout();
-                    }
-                } catch (apiError) {
-                    console.error("Error verifying token:", apiError);
-                    setError("Could not verify Salesforce connection. Check your internet connection.");
-                }
-            }
-        } catch (error) {
-            console.error("Error checking connection status:", error);
-            setError("Failed to check connection status");
-        } finally {
-            setIsLoading(false);
-            setGlobalLoading(false);
+          } else {
+            // handleLogout();
+          }
+        } catch (apiError) {
+          setError("Could not verify salesforce connection. Please check your internet connection");
         }
-    };
-
-    if (officeError) {
-        return <div className={errorMessageStyles}>Error: {officeError}</div>;
+      }
+    } catch (error) {
+      setError("Failed to check connection status");
+    } finally {
+      setIsLoading(false);
     }
+  };
 
-    if (!isOfficeReady) {
-        return <div className={loadingMessageStyles}>Loading Office context...</div>;
-    }
+  if (officeError) {
+    return <div className={errorMessageStyles}>Error: {officeError}</div>;
+  }
 
-    return (
-        <>
-            <Loader />
-            <div>
-                {isConnected ? <Home /> : <Login orgType={orgType} setOrgType={setOrgType} />}
-            </div>
-        </>
-    );
-}
+  if (!isOfficeReady) {
+    return <div className={loadingMessageStyles}>Loading Office context...</div>;
+  }
+
+  return (
+    <>
+      {isLoading ? (
+        <Loader />
+      ) : (
+        <div>{isConnected ? <Home /> : <Login orgType={orgType} setOrgType={setOrgType} />}</div>
+      )}
+    </>
+  );
+};
 
 export default App;

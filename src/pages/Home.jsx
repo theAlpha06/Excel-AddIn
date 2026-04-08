@@ -3,7 +3,7 @@ import Profile from '../components/Profile';
 
 const Home = () => {
     const [activeTab, setActiveTab] = useState('profile');
-
+    
     const tabButtonStyle = (isActive) => ({
         padding: '16px 28px',
         border: 'none',

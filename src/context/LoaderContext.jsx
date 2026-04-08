@@ -1,3 +1,5 @@
+import { AnimationStyles } from "@fluentui/react";
+import { TvUsbRegular } from "@fluentui/react-icons";
 import React, { createContext, useState } from "react";
 
 export const LoaderContext = createContext();
@@ -7,9 +9,7 @@ export const LoaderProvider = ({ children }) => {
 
     const value = {
         isLoading,
-        setIsLoading,
-        show: () => setIsLoading(true),
-        hide: () => setIsLoading(false),
+        setIsLoading
     };
 
     return (

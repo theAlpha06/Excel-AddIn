@@ -26,7 +26,6 @@ const Profile = () => {
   const handleLogout = () => {
     try {
       Office.context.document.settings.remove("salesforce_access_token");
-      Office.context.document.settings.remove("salesforce_refresh_token");
       Office.context.document.settings.remove("salesforce_instance_url");
 
       Office.context.document.settings.saveAsync((result) => {
