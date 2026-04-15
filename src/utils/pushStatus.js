@@ -30,13 +30,13 @@ export function getStepState(stepKey, status) {
     Pending:    ["submitted", "queued"],
     Processing: ["submitted", "queued", "processing"],
     Complete:   ["submitted", "queued", "processing", "done"],
-    Failed:     ["submitted", "queued"],
+    Failed:     ["submitted", "queued", "processing"],
   };
   const reached = statusToReached[status] ?? [];
   const reachedIdx = order.indexOf(reached.at(-1));
   const stepIdx = order.indexOf(stepKey);
+
   if (status === "Failed" && stepKey === "processing") return "error";
-  if (stepIdx < reachedIdx) return "done";
-  if (stepIdx === reachedIdx) return status === "Complete" ? "done" : "active";
+  if (stepIdx <= reachedIdx) return status === "Complete" ? "done" : stepIdx === reachedIdx ? "active" : "done";
   return "idle";
 }

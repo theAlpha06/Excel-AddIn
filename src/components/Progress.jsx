@@ -16,7 +16,7 @@ const STEP_ICON = { done: "✓", active: "…", error: "✕" };
 const Progress = ({ pushState }) => {
   if (!pushState) return null;
 
-  const { status, jobKey, results } = pushState;
+  const { status, jobKey, message, recordErrors } = pushState;
   const badgeStyle = BADGE_STYLE[status] ?? {};
   const progressPct = getProgressPct(status);
 
@@ -40,6 +40,12 @@ const Progress = ({ pushState }) => {
           }} />
           {status}
         </span>
+
+        {message && (
+          <span style={{ fontSize: "12px", color: "#888", marginLeft: "4px" }}>
+            {message}
+          </span>
+        )}
       </div>
 
       <div style={{ height: "4px", background: "#f0f0f0", borderRadius: "99px", overflow: "hidden", marginBottom: "16px" }}>
@@ -77,29 +83,38 @@ const Progress = ({ pushState }) => {
         })}
       </div>
 
-      {/* {status === "Complete" && results?.length > 0 && (
+      {recordErrors?.length > 0 && (
         <div style={{
-          marginTop: "14px", paddingTop: "12px",
+          marginTop: "14px",
+          paddingTop: "12px",
           borderTop: "0.5px solid #eee",
-          display: "flex", flexDirection: "column", gap: "6px",
         }}>
-          {results.map((r) => (
-            <div key={r.rowIndex} style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              fontSize: "12px", padding: "6px 10px",
-              background: r.errorMessage ? "#FCEBEB" : "#EAF3DE",
-              borderRadius: "8px",
-            }}>
-              <span style={{ color: r.errorMessage ? "#A32D2D" : "#27500A", fontWeight: 500 }}>
-                {r.level}
-              </span>
-              <span style={{ color: r.errorMessage ? "#A32D2D" : "#3B6D11", fontFamily: "monospace", fontSize: "11px" }}>
-                {r.errorMessage ?? r.salesforceId}
-              </span>
-            </div>
-          ))}
+          <div style={{
+            fontSize: "12px", fontWeight: 500, color: "#A32D2D", marginBottom: "8px",
+          }}>
+            {recordErrors.length} record{recordErrors.length > 1 ? "s" : ""} failed to sync
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+            {recordErrors.map((err) => (
+              <div
+                key={err.rowIndex}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  fontSize: "12px", padding: "6px 10px",
+                  background: "#FCEBEB", borderRadius: "8px",
+                }}
+              >
+                <span style={{ color: "#791F1F", fontFamily: "monospace" }}>
+                  Row {err.rowIndex} &nbsp;·&nbsp; {err.cell}
+                </span>
+                <span style={{ color: "#A32D2D", fontWeight: 500 }}>
+                  {err.errorMessage}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
-      )} */}
+      )}
 
       {jobKey && (
         <div style={{

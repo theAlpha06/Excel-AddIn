@@ -3,6 +3,7 @@ import Profile from '../components/Profile';
 import Progress from '../components/Progress';
 import SalesforceService from '../services/SalesforceService';
 import { Button } from '@fluentui/react-components';
+import { populateSalesforceIds } from '../utils/populateSalesforceIds';
 
 const Home = () => {
   const [activeTab, setActiveTab] = useState("profile");
@@ -12,15 +13,43 @@ const Home = () => {
   const handlePush = async () => {
     setIsPushing(true);
     setPushState({ status: "Pending", message: "Submitting…" });
+
     try {
-      await SalesforceService.pushDataToSalesforce((update) => {
+      await SalesforceService.pushDataToSalesforce(async (update) => {
+        const recordErrors = update.results?.filter((r) => r.status === "error") ?? [];
+        const hasRecordErrors = recordErrors.length > 0;
+
+        if (update.status === "Complete" && hasRecordErrors) {
+          const uniqueMessages = [...new Set(recordErrors.map((r) => r.errorMessage))];
+          setPushState({
+            ...update,
+            status: "Failed",
+            message: `Sync completed with ${recordErrors.length} record error(s): ${uniqueMessages.join(", ")}`,
+            recordErrors,
+          });
+          setIsPushing(false);
+          return;
+        }
+
         setPushState(update);
-        if (update.status === "Complete" || update.status === "Failed") {
+
+        if (update.status === "Complete") {
+          setPushState((prev) => ({ ...prev, message: "Writing IDs to Excel…" }));
+          await populateSalesforceIds(update);
+          setPushState((prev) => ({ ...prev, message: "Done" }));
+          setIsPushing(false);
+        }
+
+        if (update.status === "Failed") {
           setIsPushing(false);
         }
       });
     } catch (err) {
-      setPushState((prev) => ({ ...prev, status: "Failed", message: err.message }));
+      setPushState((prev) => ({
+        ...prev,
+        status: "Failed",
+        message: err.message,
+      }));
       setIsPushing(false);
     }
   };
@@ -30,26 +59,53 @@ const Home = () => {
       <button
         onClick={() => setActiveTab(key)}
         style={{
-          padding: "16px 28px", border: "none", backgroundColor: "transparent",
-          color: activeTab === key ? "#0078d4" : "#666", cursor: "pointer",
-          fontSize: "15px", fontWeight: "500", position: "relative", outline: "none",
+          padding: "16px 28px",
+          border: "none",
+          backgroundColor: "transparent",
+          color: activeTab === key ? "#0078d4" : "#666",
+          cursor: "pointer",
+          fontSize: "15px",
+          fontWeight: "500",
+          position: "relative",
+          outline: "none",
         }}
       >
         {label}
-        <div style={{
-          position: "absolute", bottom: 0, left: 0, right: 0, height: "3px",
-          backgroundColor: "#0078d4",
-          transform: activeTab === key ? "scaleX(1)" : "scaleX(0)",
-          transformOrigin: activeTab === key ? "left" : "right",
-          transition: "transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
-        }} />
+        <div
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: "3px",
+            backgroundColor: "#0078d4",
+            transform: activeTab === key ? "scaleX(1)" : "scaleX(0)",
+            transformOrigin: activeTab === key ? "left" : "right",
+            transition: "transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
+          }}
+        />
       </button>
     </div>
   );
 
   return (
-    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", backgroundColor: "#f9f9f9" }}>
-      <div style={{ display: "flex", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        backgroundColor: "#f9f9f9",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          borderBottom: "1px solid #e5e5e5",
+          backgroundColor: "#fff",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+        }}
+      >
         {tabBtn("profile", "Profile")}
         {tabBtn("salesforce", "Salesforce Sync")}
       </div>
@@ -62,8 +118,10 @@ const Home = () => {
             <Button onClick={handlePush} disabled={isPushing}>
               {isPushing
                 ? "Pushing…"
-                : pushState?.status === "Failed"   ? "Retry"
-                : pushState?.status === "Complete"  ? "Push Again"
+                : pushState?.status === "Failed"
+                ? "Retry"
+                : pushState?.status === "Complete"
+                ? "Push Again"
                 : "Push"}
             </Button>
 
