@@ -39,8 +39,7 @@ const Home = () => {
           setPushState((prev) => ({ ...prev, message: "Done" }));
           setIsPushing(false);
         }
-
-        if (update.status === "Failed") {
+        if (update.status === "Failed" || update.status === "RolledBack") {
           setIsPushing(false);
         }
       });
@@ -120,8 +119,8 @@ const Home = () => {
                 ? "Pushing…"
                 : pushState?.status === "Failed"
                 ? "Retry"
-                : pushState?.status === "Complete"
-                ? "Push Again"
+                : pushState?.status === "Complete" || pushState?.status === "RolledBack" 
+                ? "Retry"
                 : "Push"}
             </Button>
 

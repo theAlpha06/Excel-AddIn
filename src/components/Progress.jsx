@@ -16,9 +16,10 @@ const STEP_ICON = { done: "✓", active: "…", error: "✕" };
 const Progress = ({ pushState }) => {
   if (!pushState) return null;
 
-  const { status, jobKey, message, recordErrors } = pushState;
+  const { status, jobKey, message, recordErrors, errors } = pushState;
   const badgeStyle = BADGE_STYLE[status] ?? {};
   const progressPct = getProgressPct(status);
+  const isRollbackStatus = status === "RollingBack" || status === "RolledBack";
 
   return (
     <div style={{
@@ -36,7 +37,9 @@ const Progress = ({ pushState }) => {
           <span style={{
             width: "7px", height: "7px", borderRadius: "50%",
             background: DOT_COLOR[status],
-            animation: status === "Processing" ? "sf-pulse 1.2s ease-in-out infinite" : "none",
+            animation: (status === "Processing" || status === "RollingBack")
+              ? "sf-pulse 1.2s ease-in-out infinite"
+              : "none",
           }} />
           {status}
         </span>
@@ -116,6 +119,37 @@ const Progress = ({ pushState }) => {
         </div>
       )}
 
+      {isRollbackStatus && errors?.length > 0 && (
+        <div style={{
+          marginTop: "14px",
+          paddingTop: "12px",
+          borderTop: "0.5px solid #eee",
+        }}>
+          <div style={{
+            fontSize: "12px", fontWeight: 500,
+            color: status === "RolledBack" ? "#4B0082" : "#8B3A00",
+            marginBottom: "8px",
+          }}>
+            {status === "RolledBack"
+              ? "✕ Rolled back — reason for failure:"
+              : "⟳ Rolling back — reason:"}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "5px", maxHeight: "200px", overflow: "scroll" }}>
+            {errors.map((err, idx) => (
+              <div key={idx} style={{
+                fontSize: "12px", padding: "6px 10px",
+                background: status === "RolledBack" ? "#F4E8FF" : "#FFF0E0",
+                borderRadius: "8px",
+                color: status === "RolledBack" ? "#4B0082" : "#8B3A00",
+                fontFamily: "monospace",
+              }}>
+                {err}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {jobKey && (
         <div style={{
           marginTop: "14px", paddingTop: "12px",
@@ -123,8 +157,10 @@ const Progress = ({ pushState }) => {
           fontSize: "11px", color: "#aaa", fontFamily: "monospace",
         }}>
           Job: {jobKey}
-          {status === "Complete"  && " · synced successfully"}
-          {status === "Failed"    && " · check Salesforce logs"}
+          {status === "Complete"    && " · synced successfully"}
+          {status === "Failed"      && " · check Salesforce logs"}
+          {status === "RollingBack" && " · undoing changes…"}
+          {status === "RolledBack"  && " · all changes undone"}
           {(status === "Pending" || status === "Processing") && " · polling every 3s"}
         </div>
       )}
