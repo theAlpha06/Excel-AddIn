@@ -28,7 +28,6 @@ export async function run() {
       range.format.fill.color = "yellow";
 
       await context.sync();
-      console.log(`The range address was ${range.address}.`);
     });
   } catch (error) {
     console.error(error);

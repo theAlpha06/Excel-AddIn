@@ -50,7 +50,6 @@ const App = () => {
       await Office.context.document.settings.refreshAsync();
       const accessToken = Office.context.document.settings.get("salesforce_access_token");
       const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
-      console.log(accessToken);
       if (accessToken && instanceUrl) {
         try {
           const response = await fetch("http://localhost:5000/salesforce/check-status", {

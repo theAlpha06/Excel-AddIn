@@ -30,11 +30,9 @@ export async function populateSalesforceIds(apiResult) {
 
       for (const { address, value } of entries) {
         ws.getRange(address).values = [[value]];
-        console.log(`Writing Salesforce ID ${value} to ${sheetName}!${address}`);
       }
     }
 
     await context.sync();
-    console.log(`Done. Populated ${results.length} cells.`);
   });
 }
