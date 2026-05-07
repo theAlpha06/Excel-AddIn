@@ -68,6 +68,7 @@ const App = () => {
             }
           } else {
             // handleLogout();
+            // TO BE HANDLED LATER
           }
         } catch (apiError) {
           setError("Could not verify salesforce connection. Please check your internet connection");

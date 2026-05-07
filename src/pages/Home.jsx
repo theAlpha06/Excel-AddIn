@@ -4,54 +4,11 @@ import Progress from '../components/Progress';
 import SalesforceService from '../services/SalesforceService';
 import { Button } from '@fluentui/react-components';
 import { populateSalesforceIds } from '../utils/populateSalesforceIds';
+import SalesforceSync from './SalesforceSync';
+import { divProperties } from '@fluentui/react';
 
 const Home = () => {
   const [activeTab, setActiveTab] = useState("profile");
-  const [pushState, setPushState] = useState(null);
-  const [isPushing, setIsPushing] = useState(false);
-
-  const handlePush = async () => {
-    setIsPushing(true);
-    setPushState({ status: "Pending", message: "Submitting…" });
-
-    try {
-      await SalesforceService.pushDataToSalesforce(async (update) => {
-        const recordErrors = update.results?.filter((r) => r.status === "error") ?? [];
-        const hasRecordErrors = recordErrors.length > 0;
-
-        if (update.status === "Complete" && hasRecordErrors) {
-          const uniqueMessages = [...new Set(recordErrors.map((r) => r.errorMessage))];
-          setPushState({
-            ...update,
-            status: "Failed",
-            message: `Sync completed with ${recordErrors.length} record error(s): ${uniqueMessages.join(", ")}`,
-            recordErrors,
-          });
-          setIsPushing(false);
-          return;
-        }
-
-        setPushState(update);
-
-        if (update.status === "Complete") {
-          setPushState((prev) => ({ ...prev, message: "Writing IDs to Excel…" }));
-          await populateSalesforceIds(update);
-          setPushState((prev) => ({ ...prev, message: "Done" }));
-          setIsPushing(false);
-        }
-        if (update.status === "Failed" || update.status === "RolledBack") {
-          setIsPushing(false);
-        }
-      });
-    } catch (err) {
-      setPushState((prev) => ({
-        ...prev,
-        status: "Failed",
-        message: err.message,
-      }));
-      setIsPushing(false);
-    }
-  };
 
   const tabBtn = (key, label) => (
     <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
@@ -112,21 +69,7 @@ const Home = () => {
       <div style={{ flex: 1, overflow: "auto", padding: "10px" }}>
         {activeTab === "profile" && <Profile />}
 
-        {activeTab === "salesforce" && (
-          <div style={{ padding: "20px" }}>
-            <Button onClick={handlePush} disabled={isPushing}>
-              {isPushing
-                ? "Pushing…"
-                : pushState?.status === "Failed"
-                ? "Retry"
-                : pushState?.status === "Complete" || pushState?.status === "RolledBack" 
-                ? "Retry"
-                : "Push"}
-            </Button>
-
-            <Progress pushState={pushState} />
-          </div>
-        )}
+        {activeTab === "salesforce" && <SalesforceSync />}
       </div>
     </div>
   );

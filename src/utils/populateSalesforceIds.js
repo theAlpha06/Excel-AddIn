@@ -24,7 +24,6 @@ export async function populateSalesforceIds(apiResult) {
     for (const [sheetName, entries] of sheetMap.entries()) {
       const ws = sheetByName.get(sheetName);
       if (!ws) {
-        console.warn(`Worksheet "${sheetName}" not found, skipping.`);
         continue;
       }
 
@@ -32,7 +31,6 @@ export async function populateSalesforceIds(apiResult) {
         ws.getRange(address).values = [[value]];
       }
     }
-
     await context.sync();
   });
 }
