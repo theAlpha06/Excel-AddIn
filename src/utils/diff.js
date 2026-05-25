@@ -1,4 +1,7 @@
+export let isListenerPaused = false;
+
 export async function handleSheetChange(event) {
+    if (isListenerPaused) return;
     try {
         await Excel.run(async (context) => {
             const sheet = context.workbook.worksheets.getItem(event.worksheetId);
@@ -85,3 +88,6 @@ export async function handleSheetChange(event) {
         console.error("Change handler error:", err);
     }
 }
+
+export const pauseListener = () => { isListenerPaused = true; };
+export const resumeListener = () => { isListenerPaused = false; };

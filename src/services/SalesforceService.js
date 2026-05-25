@@ -1,57 +1,8 @@
 class SalesforceService {
-  static async pushDataToSalesforce(onStatusUpdate) {
+  static async pushDataToSalesforce(data, onStatusUpdate) {
     await Office.context.document.settings.refreshAsync();
     const accessToken = Office.context.document.settings.get("salesforce_access_token");
     const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
-
-  const raw = JSON.stringify([
-  {
-    "rowIndex": 5,
-    "name": "Opportunity Test",
-    "OpportunityId": "0067100000K3ix3AAB",
-    "accountId": "0017100000R8QKYAA3",
-    "contractStartDate": "2026-04-01",
-    "manualContractEndDate": "2028-03-31",
-    "expirationDate": "2028-03-01",
-    "billingFrequency": "Quarterly",
-    "quoteLines": [
-      {
-        "Quantity": 6,
-        "Cost Price": 51670.16,
-        "cell": "Final Quote Header & Lines!23",
-        "rowIndex": 23,
-        "Product2Id": "01t2s0000012QatAAE",
-        "OpportunityId": "0067100000K3ix3AAB",
-        "quoteLineCosts": [
-          {
-            "cell": "Lines Template!7",
-            "rowIndex": 7,
-            "costType": "Material",
-            "amount": 50014.16,
-            "part": 3238515,
-            "partDescription": "Aircleaner Kit"
-          },
-          {
-            "cell": "Lines Template!8",
-            "rowIndex": 8,
-            "costType": "Material",
-            "amount": 1656,
-            "part": "Service Engineer Charges for 70 - 82.5 KVA CPCB II",
-            "partDescription": "Service Engineer Charges for 70 - 82.5 KVA CPCB II"
-          }
-        ]
-      },
-      {
-        "Quantity": 2,
-        "Cost Price": 10000,
-        "cell": "Final Quote Header & Lines!24",
-        "rowIndex": 24,
-        "Product2Id": "01t2s0000012QatAAE",
-        "OpportunityId": "0067100000K3ix3AAB"
-      }
-    ]
-  }
-]);
 
     onStatusUpdate({ status: "Pending", message: "Submitting records…" });
 
@@ -62,7 +13,7 @@ class SalesforceService {
         "sf-access-token": accessToken,
         "sf-instance-url": instanceUrl,
       },
-      body: raw,
+      body: JSON.stringify(data),
     });
 
     if (!pushRes.ok) throw new Error("Push request failed");
@@ -85,38 +36,34 @@ class SalesforceService {
     return exists;
   }
 
+  static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 3000, maxAttempts = 100 }) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise((r) => setTimeout(r, interval));
 
-static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 3000, maxAttempts = 100 }) {
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await new Promise((r) => setTimeout(r, interval));
+      const res = await fetch(`http://localhost:5000/salesforce/v2/bulk-status/${jobKey}`, {
+        headers: {
+          "sf-access-token": accessToken,
+          "sf-instance-url": instanceUrl,
+        },
+      });
 
-    const res = await fetch(`http://localhost:5000/salesforce/v2/bulk-status/${jobKey}`, {
-      headers: {
-        "sf-access-token": accessToken,
-        "sf-instance-url": instanceUrl,
-      },
-    });
+      if (!res.ok) throw new Error("Poll request failed");
 
-    if (!res.ok) throw new Error("Poll request failed");
+      const raw = await res.json();
+      const data = typeof raw === "string" ? JSON.parse(raw) : raw;
 
-    const raw = await res.json();
-    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+      onStatusUpdate({ ...data, jobKey });
 
-    onStatusUpdate({ ...data, jobKey });
+      if (data.status === "Complete" || data.status === "Failed") {
+        return data;
+      }
 
-    if (data.status === "Complete" || data.status === "Failed") {
-      return data;
+      if (data.status === "RolledBack") {
+        return data;
+      }
     }
-
-    if (data.status === "RolledBack") {
-      // setTimeout(() => {
-      //   onStatusUpdate({ status: null }); 
-      // }, 5000);
-      return data;
-    }
+    throw new Error("Polling timed out");
   }
-  throw new Error("Polling timed out");
-}
 
   static async query(soqlQuery) {
     const accessToken = Office.context.document.settings.get("salesforce_access_token");
@@ -154,9 +101,53 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
 
     if (!response.ok) {
       const errorData = await response.json();
-      throw new Error(errorData.message || `Failed to create records: ${response.status}`);
+      throw new Error(errorData.error[0].message || `Failed to create records: ${response.status}`);
     }
 
+    return response.json();
+  }
+
+  /**
+   * PATCH a single Salesforce record via the local proxy.
+   *
+   * The proxy is expected to forward this to:
+   *   PATCH {instanceUrl}/services/data/v58.0/sobjects/{objectName}/{recordId}
+   *
+   * @param {string} objectName  - Salesforce object API name, e.g. "SBQQ__Quote__c"
+   * @param {string} recordId    - 18-char Salesforce record ID
+   * @param {object} fields      - Plain object of { sfApiFieldName: value } to update
+   */
+  static async updateRecord(objectName, recordId, fields) {
+    const accessToken = Office.context.document.settings.get("salesforce_access_token");
+    const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
+
+    const response = await fetch(
+      `http://localhost:5000/salesforce/services/data/v58.0/sobjects/${objectName}/${recordId}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "sf-access-token": accessToken,
+          "sf-instance-url": instanceUrl,
+        },
+        body: JSON.stringify(fields),
+      }
+    );
+
+    // Salesforce returns 204 No Content on a successful PATCH – treat that as OK too
+    if (!response.ok && response.status !== 204) {
+      let errorMessage = `Failed to update ${objectName} ${recordId}: HTTP ${response.status}`;
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData?.[0]?.message || errorData?.message || errorMessage;
+      } catch {
+        // response body wasn't JSON – keep the generic message
+      }
+      throw new Error(errorMessage);
+    }
+
+    // 204 has no body; return an empty object so callers don't blow up on .json()
+    if (response.status === 204) return {};
     return response.json();
   }
 }

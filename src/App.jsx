@@ -8,6 +8,8 @@ import { useLoader } from "./hooks/useLoader";
 import Loader from "./components/Loader";
 import { handleSheetChange } from "./utils/diff";
 
+export let sheetChangeHandler = null;
+
 const App = () => {
   const [error, setError] = useState(null);
   const [orgType, setOrgType] = useState(null);
