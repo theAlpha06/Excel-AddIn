@@ -1,93 +1,349 @@
-export let isListenerPaused = false;
+// ─── Field Mappings ───────────────────────────────────────────────────────────
 
-export async function handleSheetChange(event) {
-    if (isListenerPaused) return;
-    try {
-        await Excel.run(async (context) => {
-            const sheet = context.workbook.worksheets.getItem(event.worksheetId);
+const QUOTE_HEADER_MAP = {
+  "Opportunity Name *": "Name",
+  "Contract Start Date": "StartDate__c",
+  "Manual Contract End Date": "ManualContractEnddate__c",
+  "Expiration Date": "ExpirationDate__c",
+  "Billing Frequency": "BillingFrequency__c",
+  "Account Name * (Also Add Account Number)": null,
+  LOB: "LOB__c",
+  "Sub LOB": "Sub_LOB__c",
+  "Service Type": "ServiceType__c",
+  "Sale Price Book": null,
+};
 
-            console.log("Change detected:");
-            console.log("Sheet ID:", event.worksheetId);
-            console.log("Address:", event.address);
-            console.log("Change Type:", event.changeType);
-            console.log("Source:", event.source); 
+const QUOTE_LINE_ITEM_MAP = {
+  Part: null,
+  Description: "Description",
+  Quantity: "Quantity",
+  "Sale Price": "UnitPrice",
+  "Manual Sales Price": "ManualSalesPrice__c",
+  "Start Date": "StartDate__c",
+  "End Date": "EndDate__c",
+};
 
-            switch (event.changeType) {
+const QUOTE_COST_ITEM_MAP = {
+  Part: null,
+  "Part Description": "LocalPartDescription__c",
+  "Cost Price": "CostPrice__c",
+  "Manual Cost Price": "ManualCostPrice__c",
+  Quantity: "ManualQuantity__c",
+};
 
-                case "RangeEdited": {
-                    const range = sheet.getRange(event.address);
-                    range.load(["values", "address", "formulas"]);
-                    await context.sync();
+const OBJECT_API_NAMES = {
+  QuoteHeader: "Quote",
+  QuoteLineItem: "QuoteLineItem",
+  QuoteCostItem: "QuoteCostItem__c",
+};
 
-                    console.log("Cell Edited");
-                    console.log("Address:", range.address);
-                    console.log("New Value:", range.values);
-                    console.log("Formula:", range.formulas);
-                    break;
-                }
-
-                case "RowInserted": {
-                    const range = sheet.getRange(event.address);
-                    range.load(["address", "rowIndex", "rowCount"]);
-                    await context.sync();
-
-                    console.log("Row Inserted");
-                    console.log("At row index:", range.rowIndex);
-                    console.log("Row count:", range.rowCount);
-                    break;
-                }
-
-                case "RowDeleted": {
-                    console.log("Row Deleted");
-                    console.log("Address:", event.address);
-                    break;
-                }
-
-                case "ColumnInserted": {
-                    const range = sheet.getRange(event.address);
-                    range.load(["address", "columnIndex", "columnCount"]);
-                    await context.sync();
-
-                    console.log("Column Inserted");
-                    console.log("At column index:", range.columnIndex);
-                    console.log("Column count:", range.columnCount);
-                    console.log("Address:", range.address);
-                    break;
-                }
-
-                case "ColumnDeleted": {
-                    console.log("Column Deleted");
-                    console.log("Address:", event.address);
-                    break;
-                }
-
-                case "CellInserted": {      
-                    const range = sheet.getRange(event.address);
-                    range.load(["values", "address"]);
-                    await context.sync();
-
-                    console.log("Cell(s) Inserted");
-                    console.log("Address:", range.address);
-                    console.log("Values:", range.values);
-                    break;
-                }
-
-                case "CellDeleted": {
-                    console.log("Cell(s) Deleted");
-                    console.log("Address:", event.address);
-                    break;
-                }
-
-                default: {
-                    console.log("Unknown change type:", event.changeType);
-                    break;
-                }
-            }
-        });
-    } catch (err) {
-        console.error("Change handler error:", err);
-    }
+let _setPayload = null;
+export function registerPayloadSetter(fn) {
+  _setPayload = fn;
 }
 
-export const pauseListener = () => { isListenerPaused = true; };
-export const resumeListener = () => { isListenerPaused = false; };
+// ─── In-memory pending changes ────────────────────────────────────────────────
+
+const pendingChanges = {
+  quoteHeader: {}, // { sfApiName: newValue }
+  quoteLineItems: {}, // { sfId: { sfApiName: newValue } }
+  quoteCostItems: {}, // { sfId: { sfApiName: newValue } }
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+export let isListenerPaused = false;
+
+/**
+ * Find the 1-based row index of a section marker in a column-A values array.
+ * Uses loose matching to handle em-dash vs regular dash variations.
+ */
+function findSectionRow(colAValues, marker) {
+  // Normalize dashes so "—" (em), "–" (en), "-" all match
+  const normalize = (s) =>
+    String(s).replace(/[—–-]/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
+
+  const normalizedMarker = normalize(marker);
+
+  for (let i = 0; i < colAValues.length; i++) {
+    if (normalize(colAValues[i][0]).includes(normalizedMarker)) {
+      return i + 1; // 1-based
+    }
+  }
+  return -1;
+}
+
+/**
+ * Resolve an Excel column label to a Salesforce API field name.
+ * @returns {string}    sfApiName  — use this field
+ * @returns {null}      explicitly null-mapped — skip
+ * @returns {undefined} label not in map — ignore silently
+ */
+function resolveField(map, excelLabel) {
+  const trimmed = String(excelLabel ?? "").trim();
+  if (!(trimmed in map)) return undefined;
+  return map[trimmed];
+}
+
+// ─── Master sheet handler ─────────────────────────────────────────────────────
+
+async function handleMasterSheetChange(event, context) {
+  const sheet = context.workbook.worksheets.getItem(event.worksheetId);
+
+  // Scan first 100 rows for section marker
+  const colA = sheet.getRange("A1:A100");
+  colA.load("values");
+  await context.sync();
+  const colAVals = colA.values;
+
+  const sectionBRow = findSectionRow(colAVals, "SECTION B - QUOTE LINE ITEMS");
+  if (sectionBRow === -1) {
+    console.warn("Could not find SECTION B marker on master sheet");
+    return;
+  }
+
+  const lineItemHeaderRow = sectionBRow + 1;
+
+  const changedRange = sheet.getRange(event.address);
+  changedRange.load(["values", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
+  await context.sync();
+
+  const startRow = changedRange.rowIndex + 1; // 1-based
+  const startCol = changedRange.columnIndex + 1; // 1-based
+  const { values } = changedRange;
+
+  for (let r = 0; r < changedRange.rowCount; r++) {
+    const absoluteRow = startRow + r; // 1-based
+
+    // ── Quote Header region ───────────────────────────────────────────────────
+    // Inside handleMasterSheetChange, replace the Quote Header region block:
+
+    if (absoluteRow < sectionBRow) {
+      for (let c = 0; c < changedRange.columnCount; c++) {
+        const absoluteCol = startCol + c; // 1-based
+
+        // Scan leftward from the changed cell until we find a non-empty cell — that's the label
+        let labelCol = absoluteCol - 2; // 0-based, start one col to the left
+        let label = "";
+
+        while (labelCol >= 0) {
+          const labelCell = sheet.getCell(absoluteRow - 1, labelCol); // 0-based
+          labelCell.load("values");
+          await context.sync();
+
+          const cellVal = String(labelCell.values[0][0] ?? "").trim();
+          if (cellVal) {
+            label = cellVal;
+            break; // found the label
+          }
+          labelCol--; // keep going left
+        }
+
+        console.log(`Quote Header — row ${absoluteRow}, label: "${label}", value: ${values[r][c]}`);
+
+        if (!label) {
+          console.warn(
+            `No label found to the left of row ${absoluteRow}, col ${absoluteCol} — skipping`
+          );
+          continue;
+        }
+
+        const sfField = resolveField(QUOTE_HEADER_MAP, label);
+        if (sfField === undefined) {
+          console.warn(`Label "${label}" not in QUOTE_HEADER_MAP — skipping`);
+          continue;
+        }
+        if (sfField === null) {
+          console.log(`Label "${label}" is read-only — skipping`);
+          continue;
+        }
+
+        pendingChanges.quoteHeader[sfField] = values[r][c];
+        console.log(`✅ Quote Header: "${label}" → ${sfField} = ${values[r][c]}`);
+      }
+      continue;
+    }
+
+    // ── Skip section marker row and line item header row ──────────────────────
+    if (absoluteRow === sectionBRow || absoluteRow === lineItemHeaderRow) continue;
+
+    // ── Quote Line Item data rows ─────────────────────────────────────────────
+    if (absoluteRow > lineItemHeaderRow) {
+      const headerRange = sheet.getRange(`${lineItemHeaderRow}:${lineItemHeaderRow}`);
+      headerRange.load("values");
+      await context.sync();
+      const headers = headerRange.values[0];
+
+      // Salesforce ID in column R (0-based index 17)
+      const sfIdCell = sheet.getCell(absoluteRow - 1, 0);
+      sfIdCell.load("values");
+      await context.sync();
+      const sfId = String(sfIdCell.values[0][0] ?? "").trim();
+
+      if (!sfId) {
+        console.warn(`No Salesforce ID at row ${absoluteRow}, col R — skipping`);
+        continue;
+      }
+
+      if (!pendingChanges.quoteLineItems[sfId]) {
+        pendingChanges.quoteLineItems[sfId] = {};
+      }
+
+      for (let c = 0; c < changedRange.columnCount; c++) {
+        const absoluteCol = startCol + c; // 1-based
+        const headerIndex = absoluteCol - 1; // 0-based into headers array
+        const label = String(headers[headerIndex] ?? "").trim();
+        const sfField = resolveField(QUOTE_LINE_ITEM_MAP, label);
+        if (!sfField) continue;
+
+        pendingChanges.quoteLineItems[sfId][sfField] = values[r][c];
+        console.log(`✅ Quote Line Item field mapped: "${label}" → ${sfField} = ${values[r][c]}`);
+      }
+    }
+  }
+}
+
+// ─── Cost item sheet handler ──────────────────────────────────────────────────
+
+async function handleCostItemSheetChange(event, context) {
+  const sheet = context.workbook.worksheets.getItem(event.worksheetId);
+
+  // Scan first 20 rows for section marker
+  const colA = sheet.getRange("A1:A20");
+  colA.load("values");
+  await context.sync();
+  const colAVals = colA.values;
+
+  const sectionCRow = findSectionRow(colAVals, "SECTION C - QUOTE COST ITEM");
+  const HEADER_ROW = sectionCRow !== -1 ? sectionCRow + 1 : 5;
+
+  const headerRange = sheet.getRange(`${HEADER_ROW}:${HEADER_ROW}`);
+  headerRange.load("values");
+  await context.sync();
+  const headers = headerRange.values[0];
+
+  const changedRange = sheet.getRange(event.address);
+  changedRange.load(["values", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
+  await context.sync();
+
+  const startRow = changedRange.rowIndex + 1; // 1-based
+  const startCol = changedRange.columnIndex + 1;
+  const { values } = changedRange;
+
+  for (let r = 0; r < changedRange.rowCount; r++) {
+    const absoluteRow = startRow + r;
+    if (absoluteRow <= HEADER_ROW) continue;
+
+    // Salesforce ID in column R (0-based index 17)
+    const sfIdCell = sheet.getCell(absoluteRow - 1, 0);
+    sfIdCell.load("values");
+    await context.sync();
+    const sfId = String(sfIdCell.values[0][0] ?? "").trim();
+
+    if (!sfId) {
+      console.warn(`No Salesforce ID at row ${absoluteRow}, col A — skipping`);
+      continue;
+    }
+
+    if (!pendingChanges.quoteCostItems[sfId]) {
+      pendingChanges.quoteCostItems[sfId] = {};
+    }
+
+    for (let c = 0; c < changedRange.columnCount; c++) {
+      const absoluteCol = startCol + c; // 1-based
+      const headerIndex = absoluteCol - 1; // 0-based
+      const label = String(headers[headerIndex] ?? "").trim();
+      const sfField = resolveField(QUOTE_COST_ITEM_MAP, label);
+      if (!sfField) continue;
+
+      pendingChanges.quoteCostItems[sfId][sfField] = values[r][c];
+      console.log(`✅ Quote Cost Item field mapped: "${label}" → ${sfField} = ${values[r][c]}`);
+    }
+  }
+}
+
+// ─── Payload builder ──────────────────────────────────────────────────────────
+
+export async function buildPayload() {
+  let headerId = null;
+
+  await Excel.run(async (context) => {
+    const sheets = context.workbook.worksheets;
+    sheets.load("items/name");
+    await context.sync();
+
+    const master = sheets.items.find((s) => s.name === "Final Quote Header & Lines"); // ← adjust if needed
+    if (master) {
+      const idCell = master.getRange("J7");
+      idCell.load("values");
+      await context.sync();
+      headerId = String(idCell.values[0][0] ?? "").trim() || null;
+    }
+  });
+
+  // Quote header is always included as an object (with empty fields if untouched)
+  const quoteHeader = {
+    objectApiName: OBJECT_API_NAMES.QuoteHeader,
+    id: headerId,
+    fields: { ...pendingChanges.quoteHeader },
+  };
+
+  const quoteLineItems = Object.entries(pendingChanges.quoteLineItems).map(([id, fields]) => ({
+    objectApiName: OBJECT_API_NAMES.QuoteLineItem,
+    id,
+    fields,
+  }));
+
+  const quoteCostItems = Object.entries(pendingChanges.quoteCostItems).map(([id, fields]) => ({
+    objectApiName: OBJECT_API_NAMES.QuoteCostItem,
+    id,
+    fields,
+  }));
+
+  return { quoteHeader, quoteLineItems, quoteCostItems };
+}
+
+// ─── Clear state after a successful push ─────────────────────────────────────
+
+export function clearPendingChanges() {
+  pendingChanges.quoteHeader = {};
+  pendingChanges.quoteLineItems = {};
+  pendingChanges.quoteCostItems = {};
+}
+
+// ─── Main listener ────────────────────────────────────────────────────────────
+
+export async function handleSheetChange(event) {
+  if (isListenerPaused) return;
+  if (event.changeType !== "RangeEdited") return;
+
+  try {
+    await Excel.run(async (context) => {
+      const sheet = context.workbook.worksheets.getItem(event.worksheetId);
+      sheet.load("name");
+      await context.sync();
+
+      const isMaster = sheet.name === "Final Quote Header & Lines"; // ← adjust to your master sheet tab name
+
+      if (isMaster) {
+        await handleMasterSheetChange(event, context);
+      } else {
+        await handleCostItemSheetChange(event, context);
+      }
+    });
+
+    // buildPayload() called OUTSIDE Excel.run() — opens its own context internally
+    const payload = await buildPayload();
+    if (_setPayload) _setPayload(payload);
+    console.log("📦 Payload to push to Salesforce:", JSON.stringify(payload, null, 2));
+  } catch (err) {
+    console.error("Change handler error:", err);
+  }
+}
+
+export const pauseListener = () => {
+  isListenerPaused = true;
+};
+export const resumeListener = () => {
+  isListenerPaused = false;
+};

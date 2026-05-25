@@ -6,7 +6,8 @@ import { useOfficeContext } from "./hooks/useOfficeContext";
 import { useAuth } from "./hooks/useAuth";
 import { useLoader } from "./hooks/useLoader";
 import Loader from "./components/Loader";
-import { handleSheetChange } from "./utils/diff";
+import { handleSheetChange, registerPayloadSetter } from "./utils/diff";
+import { useDiff } from "./context/DiffContext";
 
 export let sheetChangeHandler = null;
 
@@ -16,6 +17,7 @@ const App = () => {
   const { isOfficeReady, officeError } = useOfficeContext();
   const { setUser, isConnected, setIsConnected } = useAuth();
   const { isLoading, setIsLoading } = useLoader();
+  const { setPendingPayload } = useDiff();
 
   const errorMessageStyles = mergeStyles({
     padding: "20px",
@@ -32,6 +34,11 @@ const App = () => {
       registerChangeListener();
     }
   }, [isOfficeReady]);
+
+  useEffect(() => {
+    registerPayloadSetter(setPendingPayload);
+    console.log("✅ Registered payload setter in App");
+  }, [setPendingPayload]);
 
   async function registerChangeListener() {
     await Excel.run(async (context) => {

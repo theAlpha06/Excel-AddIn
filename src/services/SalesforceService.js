@@ -36,34 +36,38 @@ class SalesforceService {
     return exists;
   }
 
-  static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 3000, maxAttempts = 100 }) {
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise((r) => setTimeout(r, interval));
 
-      const res = await fetch(`http://localhost:5000/salesforce/v2/bulk-status/${jobKey}`, {
-        headers: {
-          "sf-access-token": accessToken,
-          "sf-instance-url": instanceUrl,
-        },
-      });
+static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 3000, maxAttempts = 100 }) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, interval));
 
-      if (!res.ok) throw new Error("Poll request failed");
+    const res = await fetch(`http://localhost:5000/salesforce/v2/bulk-status/${jobKey}`, {
+      headers: {
+        "sf-access-token": accessToken,
+        "sf-instance-url": instanceUrl,
+      },
+    });
 
-      const raw = await res.json();
-      const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!res.ok) throw new Error("Poll request failed");
 
-      onStatusUpdate({ ...data, jobKey });
+    const raw = await res.json();
+    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
 
-      if (data.status === "Complete" || data.status === "Failed") {
-        return data;
-      }
+    onStatusUpdate({ ...data, jobKey });
 
-      if (data.status === "RolledBack") {
-        return data;
-      }
+    if (data.status === "Complete" || data.status === "Failed") {
+      return data;
     }
-    throw new Error("Polling timed out");
+
+    if (data.status === "RolledBack") {
+      // setTimeout(() => {
+      //   onStatusUpdate({ status: null }); 
+      // }, 5000);
+      return data;
+    }
   }
+  throw new Error("Polling timed out");
+}
 
   static async query(soqlQuery) {
     const accessToken = Office.context.document.settings.get("salesforce_access_token");
@@ -106,50 +110,31 @@ class SalesforceService {
 
     return response.json();
   }
+  // Add inside SalesforceService class
 
-  /**
-   * PATCH a single Salesforce record via the local proxy.
-   *
-   * The proxy is expected to forward this to:
-   *   PATCH {instanceUrl}/services/data/v58.0/sobjects/{objectName}/{recordId}
-   *
-   * @param {string} objectName  - Salesforce object API name, e.g. "SBQQ__Quote__c"
-   * @param {string} recordId    - 18-char Salesforce record ID
-   * @param {object} fields      - Plain object of { sfApiFieldName: value } to update
-   */
-  static async updateRecord(objectName, recordId, fields) {
-    const accessToken = Office.context.document.settings.get("salesforce_access_token");
-    const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
+static async composite(body) {
+  const accessToken = Office.context.document.settings.get("salesforce_access_token");
+  const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
 
-    const response = await fetch(
-      `http://localhost:5000/salesforce/services/data/v58.0/sobjects/${objectName}/${recordId}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "sf-access-token": accessToken,
-          "sf-instance-url": instanceUrl,
-        },
-        body: JSON.stringify(fields),
-      }
-    );
+  const response = await fetch(`http://localhost:5000/salesforce/composite`, {
+    method: "POST",
+    headers: {
+      "Content-Type":    "application/json",
+      "sf-access-token": accessToken,
+      "sf-instance-url": instanceUrl,
+    },
+    body: JSON.stringify(body),
+  });
 
-    // Salesforce returns 204 No Content on a successful PATCH – treat that as OK too
-    if (!response.ok && response.status !== 204) {
-      let errorMessage = `Failed to update ${objectName} ${recordId}: HTTP ${response.status}`;
-      try {
-        const errorData = await response.json();
-        errorMessage = errorData?.[0]?.message || errorData?.message || errorMessage;
-      } catch {
-        // response body wasn't JSON – keep the generic message
-      }
-      throw new Error(errorMessage);
-    }
-
-    // 204 has no body; return an empty object so callers don't blow up on .json()
-    if (response.status === 204) return {};
-    return response.json();
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.message ?? `Composite API failed: ${response.status}`);
   }
+
+  return response.json();
 }
+}
+
+
 
 export default SalesforceService;

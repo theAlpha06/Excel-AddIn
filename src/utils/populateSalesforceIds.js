@@ -12,7 +12,7 @@ export async function populateSalesforceIds(apiResult) {
       for (const record of results) {
         const [sheetName, rowStr] = record.cell.split("!");
         if (!sheetName || !rowStr) continue;
-        const cellAddress = `R${rowStr}`; 
+        const cellAddress = `A${rowStr}`; 
         if (!sheetMap.has(sheetName)) sheetMap.set(sheetName, []);
         sheetMap.get(sheetName).push({ address: cellAddress, value: record.salesforceId });
       }
