@@ -1,28 +1,9 @@
 import SalesforceService from "./SalesforceService";
 
-/**
- * Bulkified update service for diff payloads.
- *
- * Salesforce Composite API allows up to 25 subrequests per call.
- * We chunk all records and fire them in batches, reporting progress
- * after each batch via the onProgress callback.
- *
- * onProgress shape:
- * {
- *   status:   "Pending" | "InProgress" | "Complete" | "Failed",
- *   message:  string,
- *   total:    number,   // total records to update
- *   done:     number,   // records processed so far
- *   errors:   [ { referenceId, objectApiName, id, message } ]
- * }
- */
+const BATCH_SIZE = 25;
 
-const BATCH_SIZE = 25; // Salesforce Composite limit
+// ── Flatten standard records ──────────────────────────────────────────────────
 
-/**
- * Flatten the payload into a single array of update requests.
- * Each item: { objectApiName, id, fields }
- */
 function flattenPayload(payload) {
   const records = [];
 
@@ -36,34 +17,95 @@ function flattenPayload(payload) {
 
   (payload.quoteLineItems ?? []).forEach((item) => {
     if (item.id && Object.keys(item.fields).length > 0) {
-      records.push({
-        objectApiName: item.objectApiName,
-        id:            item.id,
-        fields:        item.fields,
-      });
+      records.push({ objectApiName: item.objectApiName, id: item.id, fields: item.fields });
     }
   });
 
   (payload.quoteCostItems ?? []).forEach((item) => {
     if (item.id && Object.keys(item.fields).length > 0) {
-      records.push({
-        objectApiName: item.objectApiName,
-        id:            item.id,
-        fields:        item.fields,
-      });
+      records.push({ objectApiName: item.objectApiName, id: item.id, fields: item.fields });
     }
   });
 
   return records;
 }
 
+// ── Resolve escalation records from Salesforce ────────────────────────────────
+
 /**
- * Build a Composite API request body from a chunk of records.
- * Each subrequest is a PATCH to /sobjects/{objectApiName}/{id}
+ * For each escalation entry, query SF to get the actual QuoteCostItem__c ID
+ * using ParentQuoteCostLine__c + YearNumber__c, then return as flat update records.
+ *
+ * If only the 2nd year column was edited → constant escalation →
+ * apply the same value to ALL subsequent year records under that parent.
+ *
+ * If multiple year columns were edited → apply each year's value individually.
  */
+async function resolveEscalationRecords(escalations) {
+  if (!escalations || escalations.length === 0) return [];
+
+  const resolved = [];
+
+  for (const { parentId, years } of escalations) {
+    const isConstant = years.length === 1 && years[0].yearNumber === 2;
+
+    if (isConstant) {
+      // Single 2nd-year value → fetch ALL child records for this parent and apply to all
+      const result = await SalesforceService.query(
+        `SELECT Id, YearNumber__c FROM QuoteCostItem__c 
+         WHERE ParentQuoteCostLine__c = '${parentId}' 
+         ORDER BY YearNumber__c ASC`
+      );
+
+      const { fields } = years[0];
+
+      (result.records ?? []).forEach((rec) => {
+        resolved.push({
+          objectApiName: "QuoteCostItem__c",
+          id:            rec.Id,
+          fields,
+        });
+      });
+
+      console.log(
+        `✅ Constant escalation for parent ${parentId} → applied to ${result.records?.length ?? 0} year records`
+      );
+    } else {
+      // Variable escalation → query each year individually
+      for (const { yearNumber, fields } of years) {
+        const result = await SalesforceService.query(
+          `SELECT Id, SaleEscalation__c, CostEscalation__c FROM QuoteCostItem__c 
+           WHERE ParentQuoteCostLine__c = '${parentId}' 
+           AND YearNumber__c = ${yearNumber} 
+           LIMIT 1`
+        );
+
+        if (!result.records?.length) {
+          console.warn(`No QuoteCostItem__c found for parent=${parentId}, year=${yearNumber}`);
+          continue;
+        }
+
+        resolved.push({
+          objectApiName: "QuoteCostItem__c",
+          id:            result.records[0].Id,
+          fields,
+        });
+
+        console.log(
+          `✅ Variable escalation for parent=${parentId}, year=${yearNumber} → ${result.records[0].Id}`
+        );
+      }
+    }
+  }
+ console.log(resolved);
+  return resolved;
+}
+
+// ── Composite API helpers ─────────────────────────────────────────────────────
+
 function buildCompositeBody(chunk) {
   return {
-    allOrNone: false, // partial success — collect per-record errors
+    allOrNone: false,
     compositeRequest: chunk.map((rec, i) => ({
       method:      "PATCH",
       url:         `/services/data/v59.0/sobjects/${rec.objectApiName}/${rec.id}`,
@@ -73,15 +115,11 @@ function buildCompositeBody(chunk) {
   };
 }
 
-/**
- * Parse errors out of a Composite API response.
- * Salesforce returns 204 for success and 4xx for errors per subrequest.
- */
 function parseCompositeErrors(compositeResults, chunk) {
   const errors = [];
   (compositeResults ?? []).forEach((result, i) => {
     if (result.httpStatusCode !== 204 && result.httpStatusCode !== 200) {
-      const rec = chunk[i];
+      const rec  = chunk[i];
       const body = result.body;
       const msgs = Array.isArray(body)
         ? body.map((e) => `${e.errorCode}: ${e.message}`).join("; ")
@@ -97,30 +135,13 @@ function parseCompositeErrors(compositeResults, chunk) {
   return errors;
 }
 
-/**
- * Main entry point.
- * @param {object}   payload    - built by buildPayload() in diff.js
- * @param {function} onProgress - called after every batch with progress update
- */
-export async function pushDiffToSalesforce(payload, onProgress) {
-  const records = flattenPayload(payload);
-  const total   = records.length;
-
-  if (total === 0) {
-    onProgress({ status: "Complete", message: "Nothing to update.", total: 0, done: 0, errors: [] });
-    return;
-  }
-
-  onProgress({ status: "Pending", message: "Preparing updates…", total, done: 0, errors: [] });
-
-  // Chunk into batches of BATCH_SIZE
+async function sendInBatches(records, onProgress, total, doneOffset, allErrors) {
   const chunks = [];
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     chunks.push(records.slice(i, i + BATCH_SIZE));
   }
 
-  let done       = 0;
-  const allErrors = [];
+  let done = doneOffset;
 
   for (let batchIdx = 0; batchIdx < chunks.length; batchIdx++) {
     const chunk = chunks[batchIdx];
@@ -135,13 +156,12 @@ export async function pushDiffToSalesforce(payload, onProgress) {
 
     try {
       const body     = buildCompositeBody(chunk);
-      console.log(body);
       const response = await SalesforceService.composite(body);
       const errors   = parseCompositeErrors(response.compositeResponse, chunk);
       allErrors.push(...errors);
       done += chunk.length;
     } catch (err) {
-      const message = err?.message ?? "Unknown error during batch update";
+      const message = err?.message ?? "Unknown error";
       onProgress({
         status:  "Failed",
         message: `Batch ${batchIdx + 1} failed: ${message}`,
@@ -149,10 +169,85 @@ export async function pushDiffToSalesforce(payload, onProgress) {
         done,
         errors:  allErrors,
       });
-      return; // stop processing further batches on hard failure
+      return { done, failed: true };
     }
   }
 
+  return { done, failed: false };
+}
+
+// ── Main entry point ──────────────────────────────────────────────────────────
+
+export async function pushDiffToSalesforce(payload, onProgress) {
+  const allErrors = [];
+
+  // Step 1 — flatten standard records
+  const standardRecords = flattenPayload(payload);
+
+  // Step 2 — resolve escalation records (requires SF queries)
+  onProgress({
+    status:  "Pending",
+    message: "Resolving escalation records…",
+    total:   0,
+    done:    0,
+    errors:  [],
+  });
+
+  let escalationRecords = [];
+  try {
+    escalationRecords = await resolveEscalationRecords(payload.escalations ?? []);
+  } catch (err) {
+    onProgress({
+      status:  "Failed",
+      message: `Failed to resolve escalations: ${err.message}`,
+      total:   0,
+      done:    0,
+      errors:  [],
+    });
+    return;
+  }
+
+  const allRecords = [...standardRecords, ...escalationRecords];
+  const total      = allRecords.length;
+
+  if (total === 0) {
+    onProgress({ status: "Complete", message: "Nothing to update.", total: 0, done: 0, errors: [] });
+    return;
+  }
+
+  onProgress({ status: "Pending", message: "Preparing updates…", total, done: 0, errors: [] });
+
+  // Step 3 — send standard records
+  let { done, failed } = await sendInBatches(
+    standardRecords,
+    onProgress,
+    total,
+    0,
+    allErrors
+  );
+  if (failed) return;
+
+  // Step 4 — send escalation records
+  if (escalationRecords.length > 0) {
+    onProgress({
+      status:  "InProgress",
+      message: "Updating escalation records…",
+      total,
+      done,
+      errors:  allErrors,
+    });
+
+    ({ done, failed } = await sendInBatches(
+      escalationRecords,
+      onProgress,
+      total,
+      done,
+      allErrors
+    ));
+    if (failed) return;
+  }
+
+  // Step 5 — final status
   if (allErrors.length > 0) {
     onProgress({
       status:  "Failed",

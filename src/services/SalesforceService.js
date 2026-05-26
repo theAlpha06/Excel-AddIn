@@ -110,29 +110,52 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
 
     return response.json();
   }
-  // Add inside SalesforceService class
 
-static async composite(body) {
-  const accessToken = Office.context.document.settings.get("salesforce_access_token");
-  const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
+  static async composite(body) {
+    const accessToken = Office.context.document.settings.get("salesforce_access_token");
+    const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
 
-  const response = await fetch(`http://localhost:5000/salesforce/composite`, {
-    method: "POST",
-    headers: {
-      "Content-Type":    "application/json",
-      "sf-access-token": accessToken,
-      "sf-instance-url": instanceUrl,
-    },
-    body: JSON.stringify(body),
-  });
+    const response = await fetch(`http://localhost:5000/salesforce/composite`, {
+      method: "POST",
+      headers: {
+        "Content-Type":    "application/json",
+        "sf-access-token": accessToken,
+        "sf-instance-url": instanceUrl,
+      },
+      body: JSON.stringify(body),
+    });
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err?.message ?? `Composite API failed: ${response.status}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err?.message ?? `Composite API failed: ${response.status}`);
+    }
+
+    return response.json();
   }
 
-  return response.json();
-}
+  static async uploadToSalesforce (fileName, base64Data, parentId) {
+    const accessToken = Office.context.document.settings.get("salesforce_access_token");
+    const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
+
+    const response = await fetch("http://localhost:5000/salesforce/uploadWorkbook", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "sf-access-token": accessToken,
+        "sf-instance-url": instanceUrl,
+      },
+      body: JSON.stringify({
+        fileName: fileName,
+        base64Data,
+        parentId: parentId,
+      }),
+    });
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || `Upload failed: ${response.status}`);
+    }
+    return response.json();
+  }
 }
 
 

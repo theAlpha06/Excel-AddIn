@@ -28,6 +28,7 @@ const QUOTE_COST_ITEM_MAP = {
   "Part Description": "LocalPartDescription__c",
   "Cost Price": "CostPrice__c",
   "Manual Cost Price": "ManualCostPrice__c",
+  "Manual Sale Price": "ManualSalePrice__c",
   Quantity: "ManualQuantity__c",
 };
 
@@ -41,6 +42,9 @@ let _setPayload = null;
 export function registerPayloadSetter(fn) {
   _setPayload = fn;
 }
+const SALE_ESCALATION_PATTERN = /sale escalation \((\d+)(?:st|nd|rd|th) year\)/i;
+const COST_ESCALATION_PATTERN = /cost escalation \((\d+)(?:st|nd|rd|th) year\)/i;
+
 
 // ─── In-memory pending changes ────────────────────────────────────────────────
 
@@ -48,6 +52,7 @@ const pendingChanges = {
   quoteHeader: {}, // { sfApiName: newValue }
   quoteLineItems: {}, // { sfId: { sfApiName: newValue } }
   quoteCostItems: {}, // { sfId: { sfApiName: newValue } }
+  escalations:    {}
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -208,14 +213,13 @@ async function handleMasterSheetChange(event, context) {
 async function handleCostItemSheetChange(event, context) {
   const sheet = context.workbook.worksheets.getItem(event.worksheetId);
 
-  // Scan first 20 rows for section marker
   const colA = sheet.getRange("A1:A20");
   colA.load("values");
   await context.sync();
   const colAVals = colA.values;
 
   const sectionCRow = findSectionRow(colAVals, "SECTION C - QUOTE COST ITEM");
-  const HEADER_ROW = sectionCRow !== -1 ? sectionCRow + 1 : 5;
+  const HEADER_ROW  = sectionCRow !== -1 ? sectionCRow + 1 : 5;
 
   const headerRange = sheet.getRange(`${HEADER_ROW}:${HEADER_ROW}`);
   headerRange.load("values");
@@ -236,28 +240,62 @@ async function handleCostItemSheetChange(event, context) {
 
     // Salesforce ID in column R (0-based index 17)
     const sfIdCell = sheet.getCell(absoluteRow - 1, 0);
+    // ParentQuoteCostLine__c ID in column A (0-based index 0)
+    const parentIdCell = sheet.getCell(absoluteRow - 1, 0);
+
     sfIdCell.load("values");
+    parentIdCell.load("values");
     await context.sync();
-    const sfId = String(sfIdCell.values[0][0] ?? "").trim();
 
-    if (!sfId) {
-      console.warn(`No Salesforce ID at row ${absoluteRow}, col A — skipping`);
-      continue;
-    }
-
-    if (!pendingChanges.quoteCostItems[sfId]) {
-      pendingChanges.quoteCostItems[sfId] = {};
-    }
+    const sfId    = String(sfIdCell.values[0][0]    ?? "").trim();
+    const parentId = String(parentIdCell.values[0][0] ?? "").trim();
 
     for (let c = 0; c < changedRange.columnCount; c++) {
       const absoluteCol = startCol + c; // 1-based
       const headerIndex = absoluteCol - 1; // 0-based
-      const label = String(headers[headerIndex] ?? "").trim();
+      const label       = String(headers[headerIndex] ?? "").trim();
+      const cellValue   = values[r][c];
+
+      // ── Check if it's an escalation column ──────────────────────────────
+      const saleMatch = SALE_ESCALATION_PATTERN.exec(label);
+      const costMatch = COST_ESCALATION_PATTERN.exec(label);
+
+      if (saleMatch || costMatch) {
+        const yearNumber = parseInt((saleMatch ?? costMatch)[1]);
+        const fieldName  = saleMatch ? "SaleEscalation__c" : "CostEscalation__c";
+
+        if (!parentId) {
+          console.warn(`No ParentQuoteCostLine__c at row ${absoluteRow}, col A — skipping escalation`);
+          continue;
+        }
+
+        if (!pendingChanges.escalations[parentId]) {
+          pendingChanges.escalations[parentId] = {};
+        }
+        if (!pendingChanges.escalations[parentId][yearNumber]) {
+          pendingChanges.escalations[parentId][yearNumber] = {};
+        }
+
+        pendingChanges.escalations[parentId][yearNumber][fieldName] = cellValue;
+        console.log(`✅ Escalation: parentId=${parentId}, year=${yearNumber}, ${fieldName}=${cellValue}`);
+        continue;
+      }
+
+      // ── Regular cost item field ──────────────────────────────────────────
+      if (!sfId) {
+        console.warn(`No Salesforce ID at row ${absoluteRow}, col R — skipping`);
+        continue;
+      }
+
       const sfField = resolveField(QUOTE_COST_ITEM_MAP, label);
       if (!sfField) continue;
 
-      pendingChanges.quoteCostItems[sfId][sfField] = values[r][c];
-      console.log(`✅ Quote Cost Item field mapped: "${label}" → ${sfField} = ${values[r][c]}`);
+      if (!pendingChanges.quoteCostItems[sfId]) {
+        pendingChanges.quoteCostItems[sfId] = {};
+      }
+
+      pendingChanges.quoteCostItems[sfId][sfField] = cellValue;
+      console.log(`✅ Cost Item: "${label}" → ${sfField} = ${cellValue}`);
     }
   }
 }
@@ -272,7 +310,7 @@ export async function buildPayload() {
     sheets.load("items/name");
     await context.sync();
 
-    const master = sheets.items.find((s) => s.name === "Final Quote Header & Lines"); // ← adjust if needed
+    const master = sheets.items.find((s) => s.name === "Master");
     if (master) {
       const idCell = master.getRange("J7");
       idCell.load("values");
@@ -281,34 +319,45 @@ export async function buildPayload() {
     }
   });
 
-  // Quote header is always included as an object (with empty fields if untouched)
-  const quoteHeader = {
-    objectApiName: OBJECT_API_NAMES.QuoteHeader,
-    id: headerId,
-    fields: { ...pendingChanges.quoteHeader },
-  };
+  const quoteHeader =
+    Object.keys(pendingChanges.quoteHeader).length > 0
+      ? {
+          objectApiName: OBJECT_API_NAMES.QuoteHeader,
+          id:            headerId,
+          fields:        { ...pendingChanges.quoteHeader },
+        }
+      : null;
 
-  const quoteLineItems = Object.entries(pendingChanges.quoteLineItems).map(([id, fields]) => ({
-    objectApiName: OBJECT_API_NAMES.QuoteLineItem,
-    id,
-    fields,
-  }));
+  const quoteLineItems = Object.entries(pendingChanges.quoteLineItems).map(
+    ([id, fields]) => ({ objectApiName: OBJECT_API_NAMES.QuoteLineItem, id, fields })
+  );
 
-  const quoteCostItems = Object.entries(pendingChanges.quoteCostItems).map(([id, fields]) => ({
-    objectApiName: OBJECT_API_NAMES.QuoteCostItem,
-    id,
-    fields,
-  }));
+  const quoteCostItems = Object.entries(pendingChanges.quoteCostItems).map(
+    ([id, fields]) => ({ objectApiName: OBJECT_API_NAMES.QuoteCostItem, id, fields })
+  );
 
-  return { quoteHeader, quoteLineItems, quoteCostItems };
+  // Escalations — resolve actual SF IDs at push time via DiffSyncService
+  // Here we just pass the raw structure; DiffSyncService queries SF for the IDs
+  const escalations = Object.entries(pendingChanges.escalations).map(
+    ([parentId, yearMap]) => ({
+      parentId,
+      years: Object.entries(yearMap).map(([year, fields]) => ({
+        yearNumber: parseInt(year),
+        fields,
+      })),
+    })
+  );
+
+  return { quoteHeader, quoteLineItems, quoteCostItems, escalations };
 }
 
 // ─── Clear state after a successful push ─────────────────────────────────────
 
 export function clearPendingChanges() {
-  pendingChanges.quoteHeader = {};
+  pendingChanges.quoteHeader    = {};
   pendingChanges.quoteLineItems = {};
   pendingChanges.quoteCostItems = {};
+  pendingChanges.escalations    = {};
 }
 
 // ─── Main listener ────────────────────────────────────────────────────────────
@@ -316,6 +365,7 @@ export function clearPendingChanges() {
 export async function handleSheetChange(event) {
   if (isListenerPaused) return;
   if (event.changeType !== "RangeEdited") return;
+  console.log(`Change detected on sheet ${event.worksheetId}, address ${event.address}, type ${event.changeType}`);
 
   try {
     await Excel.run(async (context) => {

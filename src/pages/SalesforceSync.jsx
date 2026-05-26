@@ -12,6 +12,7 @@ import { populateSalesforceIds } from "../utils/populateSalesforceIds";
 import { useDiff } from "../context/DiffContext";
 import { pushDiffToSalesforce } from "../services/DiffSyncService";
 import { clearPendingChanges } from "../utils/diff";
+import WorkBookAPI from "../components/WorkBookAPI";
 
 const SalesforceSync = () => {
   const [pushState, setPushState]       = useState(null);
@@ -28,7 +29,8 @@ const SalesforceSync = () => {
     pendingPayload &&
     (pendingPayload.quoteHeader !== null ||
       (pendingPayload.quoteLineItems?.length ?? 0) > 0 ||
-      (pendingPayload.quoteCostItems?.length ?? 0) > 0);
+      (pendingPayload.quoteCostItems?.length ?? 0) > 0 ||
+      (pendingPayload.escalations?.length ?? 0) > 0);
 
   useEffect(() => {
     readExcelData();
@@ -169,8 +171,8 @@ const SalesforceSync = () => {
 
       if (oppRes.records.length) {
         const stage = oppRes.records[0].StageName;
-        if (stage && (stage === "Closed Won" || stage === "Closed Lost")) {
-          const msg = `Opportunity is Closed`;
+        if (stage && (stage != "Working Platform")) {
+          const msg = `Opportunity is not in Working Platform stage`;
           setError(msg);
           return { error: msg };
         }
@@ -381,6 +383,8 @@ const SalesforceSync = () => {
         manualContractEndDate: excelDateToYYYYMMDD(header["Manual Contract End Date"]),
         expirationDate:       excelDateToYYYYMMDD(header["Expiration Date"]),
         billingFrequency:     header["Billing Frequency"],
+        contractScope: header["Contract Scope"],
+        visitFrequency: header["Visit Frequency"],
         quoteLines,
       },
     ];
@@ -484,6 +488,7 @@ const SalesforceSync = () => {
         pendingPayload.quoteHeader                   ? "1 quote header"                                              : null,
         (pendingPayload.quoteLineItems?.length ?? 0) ? `${pendingPayload.quoteLineItems.length} line item(s)`        : null,
         (pendingPayload.quoteCostItems?.length ?? 0) ? `${pendingPayload.quoteCostItems.length} cost item(s)`        : null,
+        (pendingPayload.escalations?.length ?? 0) ? `${pendingPayload.escalations.length} escalation(s)` : null,
       ]
         .filter(Boolean)
         .join(", ")
@@ -624,6 +629,7 @@ const SalesforceSync = () => {
 
         </div>
       </div>
+        <WorkBookAPI />
     </>
   );
 };
