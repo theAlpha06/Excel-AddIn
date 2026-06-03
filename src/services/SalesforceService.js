@@ -5,7 +5,7 @@ class SalesforceService {
     const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
 
     onStatusUpdate({ status: "Pending", message: "Submitting records…" });
-
+    console.log("Pushing data to Salesforce:", data);
     const pushRes = await fetch("http://localhost:5000/salesforce/v2/pushRecords", {
       method: "POST",
       headers: {
@@ -37,7 +37,7 @@ class SalesforceService {
   }
 
 
-static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 3000, maxAttempts = 100 }) {
+static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 3000, maxAttempts = 200 }) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, interval));
 
@@ -156,8 +156,29 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
     }
     return response.json();
   }
+
+  static async updateRecord(objectName, recordId, fields) {
+    const accessToken = Office.context.document.settings.get("salesforce_access_token");
+    const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
+    console.log(`Updating record ${objectName}/${recordId} with fields:`, fields);
+    const response = await fetch("http://localhost:5000/salesforce/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "sf-access-token": accessToken,
+        "sf-instance-url": instanceUrl,
+      },
+      body: JSON.stringify({ objectName, recordId, fields }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error(`Failed to update record ${objectName}/${recordId}:`, errorData);
+      throw new Error(errorData.message || `Failed to update record: ${response.status}`);
+    }
+
+    return response.json();
+  }
 }
-
-
 
 export default SalesforceService;

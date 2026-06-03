@@ -9,6 +9,9 @@ async function getHttpsOptions() {
   return { ca: httpsOptions.ca, key: httpsOptions.key, cert: httpsOptions.cert };
 }
 
+const urlDev = "https://localhost:3000";
+const urlProd = "https://your-server-domain.com";
+
 module.exports = async (env, options) => {
   const dev = options.mode === "development";
   const config = {

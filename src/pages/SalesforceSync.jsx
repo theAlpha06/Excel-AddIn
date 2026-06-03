@@ -15,11 +15,12 @@ import { clearPendingChanges } from "../utils/diff";
 import WorkBookAPI from "../components/WorkBookAPI";
 
 const SalesforceSync = () => {
-  const [pushState, setPushState]       = useState(null);
-  const [isPushing, setIsPushing]       = useState(false);
+  const [pushState, setPushState] = useState(null);
+  const [isPushing, setIsPushing] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [error, setError]               = useState(null);
-  const [quoteData, setQuoteData]       = useState([]);
+  const [error, setError] = useState(null);
+  const [quoteData, setQuoteData] = useState([]);
+  const [quoteExistsOnLoad, setQuoteExistsOnLoad] = useState(false);
   const sheetName = "Final Quote Header & Lines";
 
   // Diff context
@@ -39,8 +40,7 @@ const SalesforceSync = () => {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   const headerIndex = (data) => {
-    for (let i = 0; i < data.length; i++)
-      if (data[i][0] === "SECTION A — QUOTE HEADER") return i;
+    for (let i = 0; i < data.length; i++) if (data[i][0] === "SECTION A — QUOTE HEADER") return i;
     return -1;
   };
 
@@ -53,7 +53,8 @@ const SalesforceSync = () => {
   const headerData = (data, index, end) => {
     const header = {};
     for (let i = index; i < end - 2; i++) {
-      let field = "", value = "";
+      let field = "",
+        value = "";
       for (let j = 0; j < data[i].length; j++) {
         if (data[i][j] === "") continue;
         if (field) {
@@ -79,9 +80,9 @@ const SalesforceSync = () => {
       return parsed.toISOString().split("T")[0];
     }
     if (typeof value === "number") {
-      const utc_days  = Math.floor(value - 25569);
+      const utc_days = Math.floor(value - 25569);
       const utc_value = utc_days * 86400;
-      const date      = new Date(utc_value * 1000);
+      const date = new Date(utc_value * 1000);
       if (isNaN(date.getTime())) return null;
       return date.toISOString().split("T")[0];
     }
@@ -90,9 +91,9 @@ const SalesforceSync = () => {
 
   const fetchProductMapByPart = async (parts) => {
     if (!parts || parts.length === 0) return {};
-    const uniqueParts    = [...new Set(parts.map((p) => String(p).trim()))];
+    const uniqueParts = [...new Set(parts.map((p) => String(p).trim()))];
     const formattedParts = uniqueParts.map((p) => `'${p.replace(/'/g, "\\'")}'`).join(",");
-    const data           = await SalesforceService.query(
+    const data = await SalesforceService.query(
       `SELECT Id, ProductCode FROM Product2 WHERE ProductCode IN (${formattedParts})`
     );
     const productMap = {};
@@ -114,40 +115,40 @@ const SalesforceSync = () => {
       .split(":")
       .map((a) => a.replace(/[A-Z]+/gi, ""));
     return {
-      sheetName:    match[1].trim(),
+      sheetName: match[1].trim(),
       rangeAddress: `${rowStart}:${rowEnd}`,
     };
   };
 
   const linesData = (formulas, values, linesStartIndex, linesHeaderRow) => {
-    const QUANTITY_COL   = 3;
+    const QUANTITY_COL = 3;
     const COST_PRICE_COL = 5;
 
     return formulas
       .slice(linesStartIndex)
       .map((formulaRow, offset) => {
         const valueRow = values[linesStartIndex + offset];
-        const line     = {};
+        const line = {};
 
         formulaRow.forEach((cell, j) => {
           const header = linesHeaderRow[j]?.replace(/(\r\n|\n|\r)/g, " ");
           if (!header) return;
 
           if (j === QUANTITY_COL || j === COST_PRICE_COL) {
-            const formula  = formulaRow[j];
-            const value    = valueRow?.[j];
-            const resolved = (typeof formula === "string" && formula.startsWith("=")) ? value : value;
+            const formula = formulaRow[j];
+            const value = valueRow?.[j];
+            const resolved = typeof formula === "string" && formula.startsWith("=") ? value : value;
             if (resolved !== "" && resolved != null) line[header] = resolved;
           } else {
             if (cell !== "") line[header] = cell;
           }
         });
 
-        line.cell     = `${sheetName}!${linesStartIndex + offset + 1}`;
+        line.cell = `${sheetName}!${linesStartIndex + offset + 1}`;
         line.rowIndex = linesStartIndex + offset + 1;
 
         const rawQty = formulaRow[QUANTITY_COL];
-        const range  = extractRangeFromFormula(String(rawQty ?? ""));
+        const range = extractRangeFromFormula(String(rawQty ?? ""));
         if (range) line.quantityRange = range;
 
         return line;
@@ -157,13 +158,13 @@ const SalesforceSync = () => {
 
   const ensureOpportunity = async (quoteData) => {
     try {
-      const accountNameRaw  = quoteData["Account Name * (Also Add Account Number)"];
+      const accountNameRaw = quoteData["Account Name * (Also Add Account Number)"];
       const opportunityName = quoteData["Opportunity Name *"];
-      const LOB             = quoteData["LOB"];
-      const subLob          = quoteData["Sub LOB"];
-      const serviceType     = quoteData["Service Type"];
+      const LOB = quoteData["LOB"];
+      const subLob = quoteData["Sub LOB"];
+      const serviceType = quoteData["Service Type"];
       const salePriceBookName = quoteData["Sale Price Book"];
-      const accountName     = accountNameRaw.replace("(Lookup)", "").trim();
+      const accountName = accountNameRaw.replace("(Lookup)", "").trim();
 
       const oppRes = await SalesforceService.query(
         `SELECT Id, Name, AccountId, Pricebook2Id, StageName FROM Opportunity WHERE Name = '${opportunityName}' LIMIT 1`
@@ -171,7 +172,7 @@ const SalesforceSync = () => {
 
       if (oppRes.records.length) {
         const stage = oppRes.records[0].StageName;
-        if (stage && (stage != "Working Platform")) {
+        if (stage && stage != "Working Platform") {
           const msg = `Opportunity is not in Working Platform stage`;
           setError(msg);
           return { error: msg };
@@ -206,19 +207,19 @@ const SalesforceSync = () => {
 
       if (oppRes.records.length) {
         opportunityId = oppRes.records[0].Id;
-        accountId     = oppRes.records[0].AccountId;
-        priceBookId   = oppRes.records[0].Pricebook2Id;
+        accountId = oppRes.records[0].AccountId;
+        priceBookId = oppRes.records[0].Pricebook2Id;
       } else {
         const closeDate = new Date();
         closeDate.setDate(closeDate.getDate() + 60);
         const createRes = await SalesforceService.createRecords("Opportunity", {
-          Name:         opportunityName,
-          AccountId:    accountId,
-          CloseDate:    closeDate.toISOString().split("T")[0],
-          StageName:    "Working Platform",
+          Name: opportunityName,
+          AccountId: accountId,
+          CloseDate: closeDate.toISOString().split("T")[0],
+          StageName: "Working Platform",
           Pricebook2Id: priceBookId,
-          LOB__c:       LOB,
-          Sub_LOB__c:   subLob,
+          LOB__c: LOB,
+          Sub_LOB__c: subLob,
           ServiceType__c: serviceType,
         });
         opportunityId = createRes[0].id;
@@ -234,11 +235,12 @@ const SalesforceSync = () => {
   };
 
   const columnIndexToLetter = (index) => {
-    let letter = "", n = index + 1;
+    let letter = "",
+      n = index + 1;
     while (n > 0) {
       const rem = (n - 1) % 26;
-      letter    = String.fromCharCode(65 + rem) + letter;
-      n         = Math.floor((n - 1) / 26);
+      letter = String.fromCharCode(65 + rem) + letter;
+      n = Math.floor((n - 1) / 26);
     }
     return letter;
   };
@@ -246,13 +248,13 @@ const SalesforceSync = () => {
   const fetchDynamicStructuredRows = async (ranges) => {
     return Excel.run(async (context) => {
       const HEADER_ROW = 5;
-      const loaded     = [];
+      const loaded = [];
 
       for (const { sheetName: sName, rangeAddress } of ranges) {
         const [rowStartStr, rowEndStr] = rangeAddress.split(":");
         const rowStart = parseInt(rowStartStr);
-        const rowEnd   = parseInt(rowEndStr);
-        const sheet    = context.workbook.worksheets.getItem(sName);
+        const rowEnd = parseInt(rowEndStr);
+        const sheet = context.workbook.worksheets.getItem(sName);
         const usedRange = sheet.getUsedRange();
         usedRange.load(["columnCount", "columnIndex"]);
         loaded.push({ sName, sheet, rowStart, rowEnd, usedRange });
@@ -263,13 +265,13 @@ const SalesforceSync = () => {
       const toLoad = [];
 
       for (const { sName, sheet, rowStart, rowEnd, usedRange } of loaded) {
-        const colCount   = usedRange.columnCount;
-        const colStart   = usedRange.columnIndex;
+        const colCount = usedRange.columnCount;
+        const colStart = usedRange.columnIndex;
         const startLetter = columnIndexToLetter(colStart);
-        const endLetter   = columnIndexToLetter(colStart + colCount - 1);
+        const endLetter = columnIndexToLetter(colStart + colCount - 1);
 
         const headerRange = sheet.getRange(`${startLetter}${HEADER_ROW}:${endLetter}${HEADER_ROW}`);
-        const dataRange   = sheet.getRange(`${startLetter}${rowStart}:${endLetter}${rowEnd}`);
+        const dataRange = sheet.getRange(`${startLetter}${rowStart}:${endLetter}${rowEnd}`);
 
         headerRange.load("values");
         dataRange.load("values");
@@ -283,7 +285,10 @@ const SalesforceSync = () => {
 
       for (const { sName, headerRange, dataRange, rowStart } of toLoad) {
         const headers = headerRange.values[0].map((h) =>
-          (h || "").toString().trim().replace(/(\r\n|\n|\r)/g, " ")
+          (h || "")
+            .toString()
+            .trim()
+            .replace(/(\r\n|\n|\r)/g, " ")
         );
         dataRange.values.forEach((row, i) => {
           if (!row || row.every((cell) => cell === "" || cell === null)) return;
@@ -291,7 +296,7 @@ const SalesforceSync = () => {
           row.forEach((cell, colIdx) => {
             if (cell !== "") rowData[headers[colIdx] || `Col_${colIdx + 1}`] = cell;
           });
-          rowData.cell     = `${sName}!${rowStart + i}`;
+          rowData.cell = `${sName}!${rowStart + i}`;
           rowData.rowIndex = rowStart + i;
           results.push(rowData);
         });
@@ -303,10 +308,10 @@ const SalesforceSync = () => {
 
   const prepareData = async (formulas, values) => {
     const headerStartIndex = headerIndex(formulas) + 2;
-    const linesStartIndex  = linesIndex(formulas) + 3;
-    const header           = headerData(formulas, headerStartIndex, linesStartIndex);
-    const linesHeaderRow   = formulas[linesStartIndex - 2];
-    const rawLines         = linesData(formulas, values, linesStartIndex, linesHeaderRow);
+    const linesStartIndex = linesIndex(formulas) + 3;
+    const header = headerData(formulas, headerStartIndex, linesStartIndex);
+    const linesHeaderRow = formulas[linesStartIndex - 2];
+    const rawLines = linesData(formulas, values, linesStartIndex, linesHeaderRow);
 
     const opp = await ensureOpportunity(header);
     if (!opp.opportunityId || !opp.accountId || opp.error) return;
@@ -325,8 +330,12 @@ const SalesforceSync = () => {
     }
 
     const partSet = new Set();
-    rawLines.forEach((line) => { if (line.Part) partSet.add(String(line.Part).trim()); });
-    allCostRows.forEach((r)  => { if (r["Part"]) partSet.add(String(r["Part"]).trim()); });
+    rawLines.forEach((line) => {
+      if (line.Part) partSet.add(String(line.Part).trim());
+    });
+    allCostRows.forEach((r) => {
+      if (r["Part"]) partSet.add(String(r["Part"]).trim());
+    });
 
     const productMap = await fetchProductMapByPart([...partSet]);
 
@@ -339,52 +348,71 @@ const SalesforceSync = () => {
         const { sheetName: costSheet, rangeAddress } = quantityRange;
         const [rowStartStr, rowEndStr] = rangeAddress.split(":");
         const rowStart = parseInt(rowStartStr);
-        const rowEnd   = parseInt(rowEndStr);
+        const rowEnd = parseInt(rowEndStr);
 
         const costRows = allCostRows.filter((r) => {
           const colonIdx = r.cell.lastIndexOf("!");
-          const rSheet   = r.cell.substring(0, colonIdx);
-          const rRowNum  = parseInt(r.cell.substring(colonIdx + 1));
+          const rSheet = r.cell.substring(0, colonIdx);
+          const rRowNum = parseInt(r.cell.substring(colonIdx + 1));
           return rSheet === costSheet && rRowNum >= rowStart && rRowNum <= rowEnd;
         });
 
         return {
           ...lineFields,
-          Product2Id:      productId,
+          Product2Id: productId,
           PricebookEntryId: opp.priceBookId,
-          quoteLineCosts:  costRows.map((r) => ({
-            cell:            r.cell,
-            rowIndex:        r.rowIndex,
-            costType:        r["Cost Type"] ?? r["Type"] ?? "Material",
-            amount:          parseFloat(r["Amount"] ?? r["Cost Price"] ?? r["Cost"] ?? 0),
-            part:            r["Part"],
-            partDescription: r["Part Description"],
-            manualCostPrice: r["Manual Cost Price"],
-            manualQuantity:  r["Quantity"],
-            Product2Id:      productMap[String(r["Part"] ?? "").trim()] ?? null,
-          })),
+          quoteLineCosts: costRows
+            .filter((r) => {
+              const quantity = r["Quantity"];
+              const part = r["Part"];
+              const partDescription = r["Part Description"];
+
+              return (
+                quantity !== null &&
+                quantity !== undefined &&
+                quantity !== "" &&
+                part !== null &&
+                part !== undefined &&
+                String(part).trim() !== "" &&
+                partDescription !== null &&
+                partDescription !== undefined &&
+                String(partDescription).trim() !== ""
+              );
+            })
+            .map((r) => ({
+              cell: r.cell,
+              rowIndex: r.rowIndex,
+              costType: r["Cost Type"] ?? r["Type"] ?? "Material",
+              amount: parseFloat(r["Amount"] ?? r["Cost Price"] ?? r["Cost"] ?? 0),
+              part: r["Part"],
+              partDescription: r["Part Description"],
+              manualCostPrice: r["Manual Cost Price"],
+              manualQuantity: r["Quantity"],
+              Product2Id: productMap[String(r["Part"] ?? "").trim()] ?? null,
+            })),
         };
       }
 
       return {
         ...lineFields,
-        Product2Id:      productId,
-        PricebookEntryId: opp.priceBookId,
+        Product2Id: productId,
+        PricebookEntryId: opp.priceBookId
       };
     });
 
     const quoteData = [
       {
-        rowIndex:             headerStartIndex,
-        name:                 header["Opportunity Name *"],
-        OpportunityId:        opp.opportunityId,
-        accountId:            opp.accountId,
-        contractStartDate:    excelDateToYYYYMMDD(header["Contract Start Date"]),
+        rowIndex: headerStartIndex,
+        name: header["Opportunity Name *"],
+        OpportunityId: opp.opportunityId,
+        accountId: opp.accountId,
+        contractStartDate: excelDateToYYYYMMDD(header["Contract Start Date"]),
         manualContractEndDate: excelDateToYYYYMMDD(header["Manual Contract End Date"]),
-        expirationDate:       excelDateToYYYYMMDD(header["Expiration Date"]),
-        billingFrequency:     header["Billing Frequency"],
+        expirationDate: excelDateToYYYYMMDD(header["Expiration Date"]),
+        billingFrequency: header["Billing Frequency"],
         contractScope: header["Contract Scope"],
         visitFrequency: header["Visit Frequency"],
+        quoteRef: header["Quote Ref"],
         quoteLines,
       },
     ];
@@ -394,40 +422,70 @@ const SalesforceSync = () => {
     return quoteData;
   };
 
-  const readExcelData = async () => {
-    setIsRefreshing(true);
-    try {
-      await Excel.run(async (context) => {
-        const sheet     = context.workbook.worksheets.getItem(sheetName);
-        const usedRange = sheet.getUsedRange();
-        usedRange.load(["formulas", "values"]);
-        await context.sync();
-        if (usedRange.formulas.length > 0) {
-          await prepareData(usedRange.formulas, usedRange.values);
-        }
-      });
-    } catch (err) {
-      console.error("Error reading Excel data:", err);
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
+const readExcelData = async () => {
+  setIsRefreshing(true);
+  let result = null;
+  try {
+    await Excel.run(async (context) => {
+      const sheet = context.workbook.worksheets.getItem(sheetName);
+      const idCell = sheet.getRange("J7");
+      const usedRange = sheet.getUsedRange();
+      idCell.load("values");
+      usedRange.load(["formulas", "values"]);
+      await context.sync();
+
+      const j7Value = String(idCell.values[0][0] ?? "").trim();
+      setQuoteExistsOnLoad(!!j7Value);
+
+      if (usedRange.formulas.length > 0) {
+        result = await prepareData(usedRange.formulas, usedRange.values); // ← capture
+      }
+    });
+  } catch (err) {
+    console.error("Error reading Excel data:", err);
+  } finally {
+    setIsRefreshing(false);
+  }
+  return result; // ← return it
+};
 
   // ── Full push (existing) ───────────────────────────────────────────────────
-
-  const handlePush = async () => {
+const handlePush = async () => {
     setIsPushing(true);
-    setPushState({ status: "Pending", message: "Submitting…" });
+    let dataToPush = quoteData;
+
+    if (hasNewRows && dataToPush[0].quoteRef) {
+      try {
+        const quoteHeader = await SalesforceService.query(
+          `SELECT Id, ContractId, Status FROM Quote WHERE Id = '${quoteData[0].quoteRef}' LIMIT 1`
+        );
+        if (quoteHeader.records[0]?.Status === "Presented" && quoteHeader.records[0]?.ContractId != null) {
+          setPushState((prev) => ({ ...prev, status: "Failed", message: "Quote is in Presented Stage. Can't add/delete new rows" }));
+          setIsPushing(false);
+          return;
+        }
+        if (quoteHeader.records[0]?.ContractId == null) {
+          await SalesforceService.updateRecord("Quote", quoteData[0].quoteRef, {
+            Status: "Rejected",
+          });
+        }
+        dataToPush = await readExcelData();
+      } catch (err) {
+        setPushState((prev) => ({ ...prev, status: "Failed", message: `Failed to prepare data: ${err.message}` }));
+        setIsPushing(false);
+        return;
+      }
+    }
 
     try {
-      await SalesforceService.pushDataToSalesforce(quoteData, async (update) => {
+      await SalesforceService.pushDataToSalesforce(dataToPush, async (update) => {
         const recordErrors = update.results?.filter((r) => r.status === "error") ?? [];
 
         if (update.status === "Complete" && recordErrors.length > 0) {
           const uniqueMessages = [...new Set(recordErrors.map((r) => r.errorMessage))];
           setPushState({
             ...update,
-            status:  "Failed",
+            status: "Failed",
             message: `Sync completed with ${recordErrors.length} record error(s): ${uniqueMessages.join(", ")}`,
             recordErrors,
           });
@@ -438,10 +496,15 @@ const SalesforceSync = () => {
         setPushState(update);
 
         if (update.status === "Complete") {
-          setPushState((prev) => ({ ...prev, message: "Writing IDs to Excel…" }));
-          await populateSalesforceIds(update);
-          setPushState((prev) => ({ ...prev, message: "Done" }));
-          setIsPushing(false);
+          try {
+            setPushState((prev) => ({ ...prev, message: "Writing IDs to Excel…" }));
+            await populateSalesforceIds(update);
+            setPushState((prev) => ({ ...prev, message: "Done" }));
+          } catch (err) {
+            setPushState((prev) => ({ ...prev, status: "Failed", message: `Failed to write IDs to Excel: ${err.message}` }));
+          } finally {
+            setIsPushing(false);
+          }
         }
 
         if (update.status === "Failed" || update.status === "RolledBack") {
@@ -480,15 +543,24 @@ const SalesforceSync = () => {
   };
 
   // ── Derived state ──────────────────────────────────────────────────────────
-
   const isFailed = pushState?.status === "Failed" || pushState?.status === "RolledBack";
+
+  const quoteExists = quoteExistsOnLoad || (pendingPayload?.meta?.quoteExists ?? false);
+  const hasNewRows = pendingPayload?.meta?.hasNewRows ?? false;
+  let isPushBlocked = quoteExists && !hasNewRows;
 
   const pendingSummary = hasPendingChanges
     ? [
-        pendingPayload.quoteHeader                   ? "1 quote header"                                              : null,
-        (pendingPayload.quoteLineItems?.length ?? 0) ? `${pendingPayload.quoteLineItems.length} line item(s)`        : null,
-        (pendingPayload.quoteCostItems?.length ?? 0) ? `${pendingPayload.quoteCostItems.length} cost item(s)`        : null,
-        (pendingPayload.escalations?.length ?? 0) ? `${pendingPayload.escalations.length} escalation(s)` : null,
+        pendingPayload.quoteHeader ? "1 quote header" : null,
+        (pendingPayload.quoteLineItems?.length ?? 0)
+          ? `${pendingPayload.quoteLineItems.length} line item(s)`
+          : null,
+        (pendingPayload.quoteCostItems?.length ?? 0)
+          ? `${pendingPayload.quoteCostItems.length} cost item(s)`
+          : null,
+        (pendingPayload.escalations?.length ?? 0)
+          ? `${pendingPayload.escalations.length} escalation(s)`
+          : null,
       ]
         .filter(Boolean)
         .join(", ")
@@ -498,11 +570,17 @@ const SalesforceSync = () => {
 
   if (error) {
     return (
-      <div style={{
-        margin: "20px", padding: "12px 16px", borderRadius: "6px",
-        background: "#fef2f2", border: "1px solid #fecaca",
-        color: "#b91c1c", fontSize: "13px",
-      }}>
+      <div
+        style={{
+          margin: "20px",
+          padding: "12px 16px",
+          borderRadius: "6px",
+          background: "#fef2f2",
+          border: "1px solid #fecaca",
+          color: "#b91c1c",
+          fontSize: "13px",
+        }}
+      >
         {error}
       </div>
     );
@@ -521,26 +599,36 @@ const SalesforceSync = () => {
       `}</style>
 
       <div style={{ padding: "20px" }}>
-        <div style={{
-          background: "#f9fafb", border: "1px solid #e5e7eb",
-          borderRadius: "8px", padding: "10px 5px",
-          display: "flex", flexDirection: "column", gap: "14px",
-        }}>
-
+        <div
+          style={{
+            background: "#f9fafb",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+            padding: "10px 5px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "14px",
+          }}
+        >
           {/* ── Row 1: Full Push + Refresh ── */}
           <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
             <Button
               appearance="primary"
               icon={isFailed ? <ArrowSync16Regular /> : <ArrowUpload16Regular />}
               onClick={handlePush}
-              disabled={isPushing || !quoteData || quoteData.length === 0}
-              style={isFailed ? { background: "#dc2626", borderColor: "#dc2626" } : {}}
+              disabled={isPushing || !quoteData || quoteData.length === 0 || isPushBlocked}
+              style={isFailed ? { borderColor: "#dc2626" } : {}}
+              title={isPushBlocked ? "Quote already exists in Salesforce" : undefined}
             >
               {!quoteData || quoteData.length === 0
                 ? "Preparing Data…"
-                : isPushing ? "Pushing…"
-                : isFailed  ? "Retry"
-                : "Push"}
+                : isPushing
+                  ? "Pushing…"
+                  : isFailed
+                    ? "Retry"
+                    : isPushBlocked
+                      ? "Push (Locked)"
+                      : "Push"}
             </Button>
 
             <div style={{ width: "1px", height: "28px", background: "#d1d5db", margin: "0 6px" }} />
@@ -563,7 +651,10 @@ const SalesforceSync = () => {
                 appearance="subtle"
                 icon={<Dismiss16Regular />}
                 title="Clear progress"
-                onClick={() => { setPushState(null); setIsPushing(false); }}
+                onClick={() => {
+                  setPushState(null);
+                  setIsPushing(false);
+                }}
                 style={{ color: "#6b7280" }}
               />
             )}
@@ -571,11 +662,17 @@ const SalesforceSync = () => {
 
           {/* ── Row 2: Pending diff banner — only when there are unsync'd changes ── */}
           {hasPendingChanges && (
-            <div style={{
-              display: "flex", alignItems: "center", gap: "10px",
-              padding: "8px 12px", borderRadius: "6px",
-              background: "#fffbeb", border: "1px solid #fcd34d",
-            }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                padding: "8px 12px",
+                borderRadius: "6px",
+                background: "#fffbeb",
+                border: "1px solid #fcd34d",
+              }}
+            >
               <span style={{ fontSize: "12px", color: "#92400e", flex: 1 }}>
                 <strong>{pendingSummary}</strong> changed — not yet synced to Salesforce
               </span>
@@ -596,7 +693,10 @@ const SalesforceSync = () => {
                 size="small"
                 icon={<Dismiss16Regular />}
                 title="Discard pending changes"
-                onClick={() => { clearPendingChanges(); clearPayload(); }}
+                onClick={() => {
+                  clearPendingChanges();
+                  clearPayload();
+                }}
                 style={{ color: "#92400e" }}
               />
             </div>
@@ -607,15 +707,20 @@ const SalesforceSync = () => {
 
           {/* ── Per-record error list ── */}
           {(pushState?.errors?.length ?? 0) > 0 && (
-            <div style={{
-              background: "#fef2f2", border: "1px solid #fecaca",
-              borderRadius: "6px", padding: "10px 12px",
-              fontSize: "12px", color: "#b91c1c",
-              display: "flex", flexDirection: "column", gap: "4px",
-            }}>
-              <strong style={{ marginBottom: "4px" }}>
-                {pushState.errors.length} error(s):
-              </strong>
+            <div
+              style={{
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                borderRadius: "6px",
+                padding: "10px 12px",
+                fontSize: "12px",
+                color: "#b91c1c",
+                display: "flex",
+                flexDirection: "column",
+                gap: "4px",
+              }}
+            >
+              <strong style={{ marginBottom: "4px" }}>{pushState.errors.length} error(s):</strong>
               {pushState.errors.map((e, i) => (
                 <div key={i} style={{ paddingLeft: "8px", borderLeft: "2px solid #fca5a5" }}>
                   <span style={{ fontWeight: 500 }}>
@@ -626,10 +731,11 @@ const SalesforceSync = () => {
               ))}
             </div>
           )}
-
         </div>
       </div>
+      {quoteData && quoteData.length > 0 && quoteData[0].quoteRef && 
         <WorkBookAPI />
+      }
     </>
   );
 };

@@ -9,6 +9,7 @@ export const DiffProvider = ({ children }) => {
   //   quoteHeader:    { objectApiName, id, fields } | null,
   //   quoteLineItems: [ { objectApiName, id, fields } ],
   //   quoteCostItems: [ { objectApiName, id, fields } ],
+  //   escalations: [{}], 
   // }
 
   const clearPayload = () => setPendingPayload(null);
