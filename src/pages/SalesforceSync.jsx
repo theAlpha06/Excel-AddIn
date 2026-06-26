@@ -14,6 +14,8 @@ import { useDiff } from "../context/DiffContext";
 import { pushDiffToSalesforce } from "../services/DiffSyncService";
 import { clearPendingChanges } from "../utils/diff";
 import WorkBookAPI from "../components/WorkBookAPI";
+import { lockEntireSheet, restoreDefaultProtection } from "../utils/lockUnlock";
+import { fetchEscalationData } from "../utils/escalationFetcher";
 
 const SalesforceSync = () => {
   const [pushState, setPushState] = useState(null);
@@ -21,10 +23,10 @@ const SalesforceSync = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [quoteData, setQuoteData] = useState([]);
+  const [quantityRanges, setQuantityRanges] = useState([]);
   let quoteId;
   const [quoteExistsOnLoad, setQuoteExistsOnLoad] = useState(false);
   const sheetName = "Final Quote Header & Lines";
-
   // Diff context
   const { pendingPayload, clearPayload } = useDiff();
 
@@ -342,6 +344,7 @@ const SalesforceSync = () => {
 
     const quoteLines = rawLines.map((line) => {
       const { quantityRange, Part, ...lineFields } = line;
+      setQuantityRanges((prev) => [...prev, quantityRange]);
       const productId = productMap[String(Part ?? "").trim()];
       if (!productId) console.warn(`No Product found for Part: ${Part}`);
 
@@ -388,12 +391,13 @@ const SalesforceSync = () => {
               part: r["Part"],
               partDescription: r["Part Description"],
               manualCostPrice: r["Manual Cost Price"],
+              manualSalePrice: r["Manual Sale Price"],
               manualQuantity: r["Quantity"],
               Product2Id: productMap[String(r["Part"] ?? "").trim()] ?? null,
             })),
         };
       }
-
+      console.log(quantityRanges);
       return {
         ...lineFields,
         Product2Id: productId,
@@ -419,6 +423,7 @@ const SalesforceSync = () => {
     ];
 
     setQuoteData(quoteData);
+    console.log("Prepared quote data:", JSON.stringify(quoteData, null, 2));
     return quoteData;
   };
 
@@ -489,9 +494,10 @@ const SalesforceSync = () => {
     }
 
     try {
+      await lockEntireSheet();
       await SalesforceService.pushDataToSalesforce(dataToPush, async (update) => {
         const recordErrors = update.results?.filter((r) => r.status === "error") ?? [];
-
+        
         if (update.status === "Complete" && recordErrors.length > 0) {
           const uniqueMessages = [...new Set(recordErrors.map((r) => r.errorMessage))];
           setPushState({
@@ -503,23 +509,42 @@ const SalesforceSync = () => {
           setIsPushing(false);
           return;
         }
-
-        setPushState(update);
-
+        
+        await setPushState(update);
         if (update.status === "Complete") {
+          await setPushState({
+              status: "Created",
+              message: "Salesforce records created"
+          });
+          await restoreDefaultProtection();
           try {
-            setPushState((prev) => ({ ...prev, message: "Writing IDs to Excel…" }));
+            await setPushState({
+                status: "Writing",
+                message: "Writing Salesforce IDs to Excel"
+            });
             await populateSalesforceIds(update);
+            await Excel.run(async (context) => {
+              await context.sync();
+            });
             await readExcelData();
             if (quoteId) {
-              setPushState((prev) => ({
-                  ...prev,
-                  status: "Uploading...",
-                  message: `Uplaoding workbook`,
-                }));
+              setPushState({
+                  status: "Uploading",
+                  message: "Uploading workbook"
+              });
               await uploadWorkbook(quoteId);
             }
-            setPushState((prev) => ({ ...prev, status: "Complete", message: "Done" }));
+            if(quantityRanges.length > 0) {
+              setPushState({
+                  status: "Updating",
+                  message: "Updating escalation records"
+              });
+              const data = await fetchEscalationData(quantityRanges);
+            }
+            setPushState({
+                status: "Complete",
+                message: "Synchronization completed successfully"
+            });
           } catch (err) {
             setPushState((prev) => ({
               ...prev,
@@ -548,9 +573,13 @@ const SalesforceSync = () => {
     setPushState({ status: "Pending", message: "Preparing…", total: 0, done: 0, errors: [] });
 
     try {
-      await pushDiffToSalesforce(pendingPayload, (update) => {
+      await pushDiffToSalesforce(pendingPayload, async (update) => {
         setPushState(update);
         if (update.status === "Complete") {
+            if (quoteId) {
+              console.log(`Uploading workbook for Quote ID: ${quoteId}`);
+              await uploadWorkbook(quoteId);
+            }
           clearPendingChanges();
           clearPayload();
           setIsPushing(false);

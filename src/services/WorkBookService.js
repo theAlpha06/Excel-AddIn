@@ -1,70 +1,104 @@
 import SalesforceService from "../services/SalesforceService";
 
-export async function uploadWorkbook(parentId) {
-  return new Promise((resolve, reject) => {
-    Office.context.document.getFileAsync(
-      Office.FileType.Compressed,
-      { sliceSize: 4194304 },
-      (result) => {
-        if (result.status !== Office.AsyncResultStatus.Succeeded) {
-          reject(new Error(result.error.message));
-          return;
-        }
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-        const file = result.value;
-        let sliceIndex = 0;
-        const slices = [];
-
-        const getNextSlice = () => {
-          file.getSliceAsync(sliceIndex, async (sliceResult) => {
-            if (
-              sliceResult.status !== Office.AsyncResultStatus.Succeeded
-            ) {
-              reject(new Error(sliceResult.error.message));
-              return;
+const getFileWithRetry = async (maxRetries = 30, delayMs = 1000) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const file = await new Promise((resolve, reject) => {
+        Office.context.document.getFileAsync(
+          Office.FileType.Compressed,
+          { sliceSize: 4 * 1024 * 1024 },
+          (result) => {
+            if (result.status === Office.AsyncResultStatus.Succeeded) {
+              resolve(result.value);
+            } else {
+              reject(new Error(result.error?.message || "Failed to get workbook"));
             }
+          }
+        );
+      });
 
-            slices.push(new Uint8Array(sliceResult.value.data));
+      return file;
+    } catch (err) {
+      const msg = err.message?.toLowerCase() || "";
 
-            sliceIndex++;
+      const retryable =
+        msg.includes("closeasync") ||
+        msg.includes("before retrieving another") ||
+        msg.includes("network problem") ||
+        msg.includes("busy");
 
-            if (sliceIndex < file.sliceCount) {
-              getNextSlice();
-              return;
-            }
-
-            file.closeAsync();
-
-            const blob = new Blob(slices, {
-              type:
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            });
-
-            const reader = new FileReader();
-
-            reader.onload = async () => {
-              try {
-                const base64Data = reader.result.split(",")[1];
-
-                const response =
-                  await SalesforceService.uploadToSalesforce(
-                    "Workbook.xlsx",
-                    base64Data,
-                    parentId
-                  );
-
-                resolve(response);
-              } catch (err) {
-                reject(err);
-              }
-            };
-
-            reader.readAsDataURL(blob);
-          });
-        };
-
-        getNextSlice();
+      if (!retryable || attempt === maxRetries) {
+        throw err;
       }
-    );
+
+      console.warn(
+        `[uploadWorkbook] Workbook busy. Retry ${attempt}/${maxRetries}...`
+      );
+
+      await delay(delayMs);
+    }
+  }
+};
+
+const getSliceAsync = (file, index) =>
+  new Promise((resolve, reject) => {
+    file.getSliceAsync(index, (result) => {
+      if (result.status === Office.AsyncResultStatus.Succeeded) {
+        resolve(result.value);
+      } else {
+        reject(new Error(result.error.message));
+      }
+    });
   });
+
+const closeFileAsync = (file) =>
+  new Promise((resolve) => {
+    file.closeAsync(() => resolve());
+  });
+
+export async function uploadWorkbook(parentId) {
+  // Give Excel a moment to finish writing changes
+  await Excel.run(async (context) => {
+    await context.sync();
+  });
+
+  await delay(1000);
+
+  const file = await getFileWithRetry();
+
+  try {
+    const slices = [];
+
+    for (let i = 0; i < file.sliceCount; i++) {
+      const slice = await getSliceAsync(file, i);
+      slices.push(new Uint8Array(slice.data));
+    }
+
+    const blob = new Blob(slices, {
+      type:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = () => {
+        resolve(reader.result.split(",")[1]);
+      };
+
+      reader.onerror = reject;
+
+      reader.readAsDataURL(blob);
+    });
+
+    return await SalesforceService.uploadToSalesforce(
+      "Workbook.xlsx",
+      base64,
+      parentId
+    );
+  } finally {
+    await closeFileAsync(file);
+  }
 }

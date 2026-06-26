@@ -1,3 +1,4 @@
+import SalesforceService from "../services/SalesforceService";
 import { pauseListener, resumeListener } from "./diff";
 
 export async function populateSalesforceIds(apiResult) {
@@ -16,35 +17,36 @@ export async function populateSalesforceIds(apiResult) {
         if (!sheetMap.has(sheetName)) sheetMap.set(sheetName, []);
         sheetMap.get(sheetName).push({ address: cellAddress, value: record.salesforceId });
       }
-
+      
       const worksheets = context.workbook.worksheets;
       worksheets.load("items/name");
       await context.sync();
-
+      
       const sheetByName = new Map(
         worksheets.items.map((ws) => [ws.name, ws])
       );
-
+      
       for (const [sheetName, entries] of sheetMap.entries()) {
         const ws = sheetByName.get(sheetName);
         if (!ws) {
           continue;
         }
-
+        
         for (const { address, value } of entries) {
           ws.getRange(address).values = [[value]];
         }
       }
-
+      
       const quoteId = apiResult.insertedIds?.quoteIds?.[0];
+      const quoteNumber = await SalesforceService.query(`SELECT QuoteNumber FROM Quote WHERE Id = '${quoteId}'`);
+
       if (quoteId) {
         const quoteSheet = sheetByName.get("Final Quote Header & Lines");
         if (quoteSheet) {
           console.log(`Writing Quote ID ${quoteId} → Final Quote Header & Lines!J7`);
           quoteSheet.getRange("J7").values = [[quoteId]];
-        } else {
-          console.warn(`Sheet not found: "Final Quote Header & Lines"`);
-        }
+          quoteSheet.getRange("J14").values = [[quoteNumber?.records?.[0]?.QuoteNumber || ""]];
+        } 
       }
       await context.sync();
     });
