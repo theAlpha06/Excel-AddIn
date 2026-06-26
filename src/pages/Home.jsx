@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Profile from '../components/Profile';
 import Progress from '../components/Progress';
 import SalesforceService from '../services/SalesforceService';
@@ -9,6 +9,58 @@ import { divProperties } from '@fluentui/react';
 
 const Home = () => {
   const [activeTab, setActiveTab] = useState("profile");
+
+  const lockFields = async () => {
+    await Excel.run(async (context) => {
+      const sheet1 = context.workbook.worksheets.getItem(
+        "Final Quote Header & Lines"
+      );
+      const sheet2 = context.workbook.worksheets.getItem(
+        "Lines Template"
+      );
+
+      sheet1.protection.load("protected");
+      sheet2.protection.load("protected");
+
+      await context.sync();
+
+      if (sheet1.protection.protected) {
+        sheet1.protection.unprotect();
+      }
+
+      if (sheet2.protection.protected) {
+        sheet2.protection.unprotect();
+      }
+
+      sheet1.getUsedRange().format.protection.locked = false;
+      sheet2.getUsedRange().format.protection.locked = false;
+
+      sheet1.getRange("A4:A18").format.protection.locked = true;
+      sheet1.getRange("A20").format.protection.locked = true;
+      sheet1.getRange("A21:I21").format.protection.locked = true;
+      sheet1.getRange("G6:G13").format.protection.locked = true;
+
+      sheet2.getRange("A5:D5").format.protection.locked = true;
+
+      sheet1.protection.protect({
+        allowAutoFilter: true,
+        allowSort: true,
+        allowInsertRows: true
+      });
+
+      sheet2.protection.protect({
+        allowAutoFilter: true,
+        allowSort: true,
+        allowInsertRows: true
+      });
+
+      await context.sync();
+    });
+  };
+
+  useEffect(() => {
+    lockFields();
+  }, [])
 
   const tabBtn = (key, label) => (
     <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
