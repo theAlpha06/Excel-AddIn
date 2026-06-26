@@ -19,7 +19,7 @@ class SalesforceService {
     if (!pushRes.ok) throw new Error("Push request failed");
 
     const { jobKey, message } = await pushRes.json();
-    onStatusUpdate({ status: "Pending", jobKey, message });
+    onStatusUpdate({ status: "Pending", jobKey, message });    
 
     return SalesforceService.pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate });
   }
@@ -37,7 +37,7 @@ class SalesforceService {
   }
 
 
-static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 3000, maxAttempts = 200 }) {
+static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 10000, maxAttempts = 200 }) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, interval));
 

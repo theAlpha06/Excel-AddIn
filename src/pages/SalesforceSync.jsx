@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import Progress from "../components/Progress";
 import SalesforceService from "../services/SalesforceService";
+import { uploadWorkbook } from "../services/WorkBookService";
 import { Button } from "@fluentui/react-components";
 import {
   Dismiss16Regular,
@@ -20,6 +21,7 @@ const SalesforceSync = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [quoteData, setQuoteData] = useState([]);
+  let quoteId;
   const [quoteExistsOnLoad, setQuoteExistsOnLoad] = useState(false);
   const sheetName = "Final Quote Header & Lines";
 
@@ -37,7 +39,6 @@ const SalesforceSync = () => {
     readExcelData();
   }, []);
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
 
   const headerIndex = (data) => {
     for (let i = 0; i < data.length; i++) if (data[i][0] === "SECTION A — QUOTE HEADER") return i;
@@ -396,7 +397,7 @@ const SalesforceSync = () => {
       return {
         ...lineFields,
         Product2Id: productId,
-        PricebookEntryId: opp.priceBookId
+        PricebookEntryId: opp.priceBookId,
       };
     });
 
@@ -418,39 +419,38 @@ const SalesforceSync = () => {
     ];
 
     setQuoteData(quoteData);
-    console.log(quoteData);
     return quoteData;
   };
 
-const readExcelData = async () => {
-  setIsRefreshing(true);
-  let result = null;
-  try {
-    await Excel.run(async (context) => {
-      const sheet = context.workbook.worksheets.getItem(sheetName);
-      const idCell = sheet.getRange("J7");
-      const usedRange = sheet.getUsedRange();
-      idCell.load("values");
-      usedRange.load(["formulas", "values"]);
-      await context.sync();
+  const readExcelData = async () => {
+    setIsRefreshing(true);
+    let result = null;
+    try {
+      await Excel.run(async (context) => {
+        const sheet = context.workbook.worksheets.getItem(sheetName);
+        const idCell = sheet.getRange("J7");
+        const usedRange = sheet.getUsedRange();
+        idCell.load("values");
+        usedRange.load(["formulas", "values"]);
+        await context.sync();
 
-      const j7Value = String(idCell.values[0][0] ?? "").trim();
-      setQuoteExistsOnLoad(!!j7Value);
+        const j7Value = String(idCell.values[0][0] ?? "").trim();
+        setQuoteExistsOnLoad(!!j7Value);
+        quoteId = j7Value;
 
-      if (usedRange.formulas.length > 0) {
-        result = await prepareData(usedRange.formulas, usedRange.values); // ← capture
-      }
-    });
-  } catch (err) {
-    console.error("Error reading Excel data:", err);
-  } finally {
-    setIsRefreshing(false);
-  }
-  return result; // ← return it
-};
+        if (usedRange.formulas.length > 0) {
+          result = await prepareData(usedRange.formulas, usedRange.values);
+        }
+      });
+    } catch (err) {
+      console.error("Error reading Excel data:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
+    return result;
+  };
 
-  // ── Full push (existing) ───────────────────────────────────────────────────
-const handlePush = async () => {
+  const handlePush = async () => {
     setIsPushing(true);
     let dataToPush = quoteData;
 
@@ -459,8 +459,15 @@ const handlePush = async () => {
         const quoteHeader = await SalesforceService.query(
           `SELECT Id, ContractId, Status FROM Quote WHERE Id = '${quoteData[0].quoteRef}' LIMIT 1`
         );
-        if (quoteHeader.records[0]?.Status === "Presented" && quoteHeader.records[0]?.ContractId != null) {
-          setPushState((prev) => ({ ...prev, status: "Failed", message: "Quote is in Presented Stage. Can't add/delete new rows" }));
+        if (
+          quoteHeader.records[0]?.Status === "Presented" &&
+          quoteHeader.records[0]?.ContractId != null
+        ) {
+          setPushState((prev) => ({
+            ...prev,
+            status: "Failed",
+            message: "Quote is in Presented Stage. Can't add/delete new rows",
+          }));
           setIsPushing(false);
           return;
         }
@@ -471,7 +478,11 @@ const handlePush = async () => {
         }
         dataToPush = await readExcelData();
       } catch (err) {
-        setPushState((prev) => ({ ...prev, status: "Failed", message: `Failed to prepare data: ${err.message}` }));
+        setPushState((prev) => ({
+          ...prev,
+          status: "Failed",
+          message: `Failed to prepare data: ${err.message}`,
+        }));
         setIsPushing(false);
         return;
       }
@@ -499,9 +510,22 @@ const handlePush = async () => {
           try {
             setPushState((prev) => ({ ...prev, message: "Writing IDs to Excel…" }));
             await populateSalesforceIds(update);
-            setPushState((prev) => ({ ...prev, message: "Done" }));
+            await readExcelData();
+            if (quoteId) {
+              setPushState((prev) => ({
+                  ...prev,
+                  status: "Uploading...",
+                  message: `Uplaoding workbook`,
+                }));
+              await uploadWorkbook(quoteId);
+            }
+            setPushState((prev) => ({ ...prev, status: "Complete", message: "Done" }));
           } catch (err) {
-            setPushState((prev) => ({ ...prev, status: "Failed", message: `Failed to write IDs to Excel: ${err.message}` }));
+            setPushState((prev) => ({
+              ...prev,
+              status: "Failed",
+              message: `Failed to write IDs to Excel: ${err.message}`,
+            }));
           } finally {
             setIsPushing(false);
           }
@@ -517,7 +541,6 @@ const handlePush = async () => {
     }
   };
 
-  // ── Diff push (new) ────────────────────────────────────────────────────────
 
   const handleDiffPush = async () => {
     if (!pendingPayload) return;
@@ -542,7 +565,6 @@ const handlePush = async () => {
     }
   };
 
-  // ── Derived state ──────────────────────────────────────────────────────────
   const isFailed = pushState?.status === "Failed" || pushState?.status === "RolledBack";
 
   const quoteExists = quoteExistsOnLoad || (pendingPayload?.meta?.quoteExists ?? false);
@@ -566,7 +588,6 @@ const handlePush = async () => {
         .join(", ")
     : "";
 
-  // ── Error screen ───────────────────────────────────────────────────────────
 
   if (error) {
     return (
@@ -586,7 +607,6 @@ const handlePush = async () => {
     );
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <>
@@ -610,7 +630,6 @@ const handlePush = async () => {
             gap: "14px",
           }}
         >
-          {/* ── Row 1: Full Push + Refresh ── */}
           <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
             <Button
               appearance="primary"
@@ -660,7 +679,6 @@ const handlePush = async () => {
             )}
           </div>
 
-          {/* ── Row 2: Pending diff banner — only when there are unsync'd changes ── */}
           {hasPendingChanges && (
             <div
               style={{
@@ -702,10 +720,8 @@ const handlePush = async () => {
             </div>
           )}
 
-          {/* ── Progress bar (shared) ── */}
           {pushState && <Progress pushState={pushState} />}
 
-          {/* ── Per-record error list ── */}
           {(pushState?.errors?.length ?? 0) > 0 && (
             <div
               style={{
@@ -733,9 +749,7 @@ const handlePush = async () => {
           )}
         </div>
       </div>
-      {quoteData && quoteData.length > 0 && quoteData[0].quoteRef && 
-        <WorkBookAPI />
-      }
+      {/* {quoteData && quoteData.length > 0 && quoteData[0].quoteRef && <WorkBookAPI />} */}
     </>
   );
 };

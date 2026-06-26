@@ -11,6 +11,7 @@ const QUOTE_HEADER_MAP = {
   "Sub LOB": "Sub_LOB__c",
   "Service Type": "ServiceType__c",
   "Sale Price Book": null,
+  "Visit Frequency": "Visit_frequency__c",
 };
 
 const QUOTE_LINE_ITEM_MAP = {
@@ -46,7 +47,6 @@ const SALE_ESCALATION_PATTERN = /sale escalation \((\d+)(?:st|nd|rd|th) year\)/i
 const COST_ESCALATION_PATTERN = /cost escalation \((\d+)(?:st|nd|rd|th) year\)/i;
 
 
-// ─── In-memory pending changes ────────────────────────────────────────────────
 
 const pendingChanges = {
   quoteHeader: {}, // { sfApiName: newValue }
@@ -59,16 +59,10 @@ const pendingChanges = {
   },
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export let isListenerPaused = false;
 
-/**
- * Find the 1-based row index of a section marker in a column-A values array.
- * Uses loose matching to handle em-dash vs regular dash variations.
- */
 function findSectionRow(colAValues, marker) {
-  // Normalize dashes so "—" (em), "–" (en), "-" all match
   const normalize = (s) =>
     String(s).replace(/[—–-]/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -76,30 +70,21 @@ function findSectionRow(colAValues, marker) {
 
   for (let i = 0; i < colAValues.length; i++) {
     if (normalize(colAValues[i][0]).includes(normalizedMarker)) {
-      return i + 1; // 1-based
+      return i + 1; 
     }
   }
   return -1;
 }
 
-/**
- * Resolve an Excel column label to a Salesforce API field name.
- * @returns {string}    sfApiName  — use this field
- * @returns {null}      explicitly null-mapped — skip
- * @returns {undefined} label not in map — ignore silently
- */
 function resolveField(map, excelLabel) {
   const trimmed = String(excelLabel ?? "").trim();
   if (!(trimmed in map)) return undefined;
   return map[trimmed];
 }
 
-// ─── Master sheet handler ─────────────────────────────────────────────────────
 
 async function handleMasterSheetChange(event, context) {
   const sheet = context.workbook.worksheets.getItem(event.worksheetId);
-
-  // Scan first 100 rows for section marker
   const colA = sheet.getRange("A1:A100");
   colA.load("values");
   await context.sync();
@@ -117,35 +102,31 @@ async function handleMasterSheetChange(event, context) {
   changedRange.load(["values", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
   await context.sync();
 
-  const startRow = changedRange.rowIndex + 1; // 1-based
-  const startCol = changedRange.columnIndex + 1; // 1-based
+  const startRow = changedRange.rowIndex + 1; 
+  const startCol = changedRange.columnIndex + 1; 
   const { values } = changedRange;
 
   for (let r = 0; r < changedRange.rowCount; r++) {
-    const absoluteRow = startRow + r; // 1-based
-
-    // ── Quote Header region ───────────────────────────────────────────────────
-    // Inside handleMasterSheetChange, replace the Quote Header region block:
+    const absoluteRow = startRow + r; 
 
     if (absoluteRow < sectionBRow) {
       for (let c = 0; c < changedRange.columnCount; c++) {
-        const absoluteCol = startCol + c; // 1-based
+        const absoluteCol = startCol + c; 
 
-        // Scan leftward from the changed cell until we find a non-empty cell — that's the label
-        let labelCol = absoluteCol - 2; // 0-based, start one col to the left
+        let labelCol = absoluteCol - 2; 
         let label = "";
 
         while (labelCol >= 0) {
-          const labelCell = sheet.getCell(absoluteRow - 1, labelCol); // 0-based
+          const labelCell = sheet.getCell(absoluteRow - 1, labelCol); 
           labelCell.load("values");
           await context.sync();
 
           const cellVal = String(labelCell.values[0][0] ?? "").trim();
           if (cellVal) {
             label = cellVal;
-            break; // found the label
+            break; 
           }
-          labelCol--; // keep going left
+          labelCol--; 
         }
 
         console.log(`Quote Header — row ${absoluteRow}, label: "${label}", value: ${values[r][c]}`);
@@ -173,17 +154,14 @@ async function handleMasterSheetChange(event, context) {
       continue;
     }
 
-    // ── Skip section marker row and line item header row ──────────────────────
     if (absoluteRow === sectionBRow || absoluteRow === lineItemHeaderRow) continue;
 
-    // ── Quote Line Item data rows ─────────────────────────────────────────────
     if (absoluteRow > lineItemHeaderRow) {
       const headerRange = sheet.getRange(`${lineItemHeaderRow}:${lineItemHeaderRow}`);
       headerRange.load("values");
       await context.sync();
       const headers = headerRange.values[0];
 
-      // Salesforce ID in column R (0-based index 17)
       const sfIdCell = sheet.getCell(absoluteRow - 1, 0);
       sfIdCell.load("values");
       await context.sync();
@@ -200,8 +178,8 @@ async function handleMasterSheetChange(event, context) {
       }
 
       for (let c = 0; c < changedRange.columnCount; c++) {
-        const absoluteCol = startCol + c; // 1-based
-        const headerIndex = absoluteCol - 1; // 0-based into headers array
+        const absoluteCol = startCol + c; 
+        const headerIndex = absoluteCol - 1; 
         const label = String(headers[headerIndex] ?? "").trim();
         const sfField = resolveField(QUOTE_LINE_ITEM_MAP, label);
         if (!sfField) continue;
@@ -213,7 +191,6 @@ async function handleMasterSheetChange(event, context) {
   }
 }
 
-// ─── Cost item sheet handler ──────────────────────────────────────────────────
 
 async function handleCostItemSheetChange(event, context) {
   const sheet = context.workbook.worksheets.getItem(event.worksheetId);
@@ -235,17 +212,14 @@ async function handleCostItemSheetChange(event, context) {
   changedRange.load(["values", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
   await context.sync();
 
-  const startRow = changedRange.rowIndex + 1; // 1-based
+  const startRow = changedRange.rowIndex + 1; 
   const startCol = changedRange.columnIndex + 1;
   const { values } = changedRange;
 
   for (let r = 0; r < changedRange.rowCount; r++) {
     const absoluteRow = startRow + r;
     if (absoluteRow <= HEADER_ROW) continue;
-
-    // Salesforce ID in column R (0-based index 17)
     const sfIdCell = sheet.getCell(absoluteRow - 1, 0);
-    // ParentQuoteCostLine__c ID in column A (0-based index 0)
     const parentIdCell = sheet.getCell(absoluteRow - 1, 0);
 
     sfIdCell.load("values");
@@ -256,12 +230,11 @@ async function handleCostItemSheetChange(event, context) {
     const parentId = String(parentIdCell.values[0][0] ?? "").trim();
 
     for (let c = 0; c < changedRange.columnCount; c++) {
-      const absoluteCol = startCol + c; // 1-based
-      const headerIndex = absoluteCol - 1; // 0-based
+      const absoluteCol = startCol + c; 
+      const headerIndex = absoluteCol - 1; 
       const label       = String(headers[headerIndex] ?? "").trim();
       const cellValue   = values[r][c];
 
-      // ── Check if it's an escalation column ──────────────────────────────
       const saleMatch = SALE_ESCALATION_PATTERN.exec(label);
       const costMatch = COST_ESCALATION_PATTERN.exec(label);
 
@@ -286,7 +259,6 @@ async function handleCostItemSheetChange(event, context) {
         continue;
       }
 
-      // ── Regular cost item field ──────────────────────────────────────────
       if (!sfId) {
         pendingChanges.meta.hasNewRows = true;
         console.warn(`No Salesforce ID at row ${absoluteRow}, col R — skipping`);
@@ -306,7 +278,6 @@ async function handleCostItemSheetChange(event, context) {
   }
 }
 
-// ─── Payload builder ──────────────────────────────────────────────────────────
 
 export async function buildPayload() {
   let headerId = null;
@@ -326,11 +297,11 @@ export async function buildPayload() {
     }
   });
 
-  const quoteHeader = {
+  const quoteHeader = Object.keys(pendingChanges.quoteHeader).length > 0 ? {
           objectApiName: OBJECT_API_NAMES.QuoteHeader,
           id:            headerId,
           fields:        { ...pendingChanges.quoteHeader, UniqueText__c: `ExcelSync-${Date.now()}`, isEditable__c: false },
-        };
+        }: null;
 
   const quoteLineItems = Object.entries(pendingChanges.quoteLineItems).map(
     ([id, fields]) => ({
@@ -356,8 +327,6 @@ export async function buildPayload() {
     })
   );
 
-  // Escalations — resolve actual SF IDs at push time via DiffSyncService
-  // Here we just pass the raw structure; DiffSyncService queries SF for the IDs
   const escalations = Object.entries(pendingChanges.escalations).map(
     ([parentId, yearMap]) => ({
       parentId,
@@ -375,9 +344,6 @@ export async function buildPayload() {
   return { quoteHeader, quoteLineItems, quoteCostItems, escalations, meta: { ...pendingChanges.meta } };
 }
 
-// ─── Clear state after a successful push ─────────────────────────────────────
-
-// AFTER
 export function clearPendingChanges() {
   pendingChanges.quoteHeader    = {};
   pendingChanges.quoteLineItems = {};
@@ -385,8 +351,6 @@ export function clearPendingChanges() {
   pendingChanges.escalations    = {};
   pendingChanges.meta.hasNewRows = false;
 }
-
-// ─── Main listener ────────────────────────────────────────────────────────────
 
 export async function handleSheetChange(event) {
   if (isListenerPaused) return;
@@ -399,7 +363,7 @@ export async function handleSheetChange(event) {
       sheet.load("name");
       await context.sync();
 
-      const isMaster = sheet.name === "Final Quote Header & Lines"; // ← adjust to your master sheet tab name
+      const isMaster = sheet.name === "Final Quote Header & Lines"; 
 
       if (isMaster) {
         await handleMasterSheetChange(event, context);
@@ -408,7 +372,6 @@ export async function handleSheetChange(event) {
       }
     });
 
-    // buildPayload() called OUTSIDE Excel.run() — opens its own context internally
     const payload = await buildPayload();
     if (_setPayload) _setPayload(payload);
     console.log("📦 Payload to push to Salesforce:", JSON.stringify(payload, null, 2));

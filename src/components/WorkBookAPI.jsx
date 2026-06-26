@@ -150,8 +150,6 @@ const WorkBookAPI = () => {
                           parentId
                         );
 
-                      console.log("Upload Response:", response);
-
                       setResults(response);
                     } catch (error) {
                       console.error("Upload Error:", error);
