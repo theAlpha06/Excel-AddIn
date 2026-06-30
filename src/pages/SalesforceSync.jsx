@@ -457,6 +457,7 @@ const SalesforceSync = () => {
 
   const handlePush = async () => {
     setIsPushing(true);
+    await lockEntireSheet();
     let dataToPush = quoteData;
 
     if (hasNewRows && dataToPush[0].quoteRef) {
@@ -494,7 +495,6 @@ const SalesforceSync = () => {
     }
 
     try {
-      await lockEntireSheet();
       await SalesforceService.pushDataToSalesforce(dataToPush, async (update) => {
         const recordErrors = update.results?.filter((r) => r.status === "error") ?? [];
         
@@ -527,6 +527,7 @@ const SalesforceSync = () => {
               await context.sync();
             });
             await readExcelData();
+            await lockEntireSheet();
             if (quoteId) {
               setPushState({
                   status: "Uploading",
@@ -545,6 +546,7 @@ const SalesforceSync = () => {
                 status: "Complete",
                 message: "Synchronization completed successfully"
             });
+            await restoreDefaultProtection();
           } catch (err) {
             setPushState((prev) => ({
               ...prev,
@@ -553,16 +555,19 @@ const SalesforceSync = () => {
             }));
           } finally {
             setIsPushing(false);
+            await restoreDefaultProtection();
           }
         }
 
         if (update.status === "Failed" || update.status === "RolledBack") {
           setIsPushing(false);
+          await restoreDefaultProtection();
         }
       });
     } catch (err) {
       setPushState((prev) => ({ ...prev, status: "Failed", message: err.message }));
       setIsPushing(false);
+      await restoreDefaultProtection();
     }
   };
 
