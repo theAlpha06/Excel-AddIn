@@ -1,5 +1,3 @@
-// ─── Field Mappings ───────────────────────────────────────────────────────────
-
 const QUOTE_HEADER_MAP = {
   "Opportunity Name *": "Name",
   "Contract Start Date": "StartDate__c",
@@ -49,13 +47,13 @@ const COST_ESCALATION_PATTERN = /cost escalation \((\d+)(?:st|nd|rd|th) year\)/i
 
 
 const pendingChanges = {
-  quoteHeader: {}, // { sfApiName: newValue }
-  quoteLineItems: {}, // { sfId: { sfApiName: newValue } }
-  quoteCostItems: {}, // { sfId: { sfApiName: newValue } }
+  quoteHeader: {},
+  quoteLineItems: {},
+  quoteCostItems: {},
   escalations:    {},
   meta: {
-    quoteExists: false,  // true if J7 has a value
-    hasNewRows:  false,  // true if any data row has empty A col
+    quoteExists: false, 
+    hasNewRows:  false, 
   },
 };
 
@@ -216,6 +214,41 @@ async function handleCostItemSheetChange(event, context) {
   const startCol = changedRange.columnIndex + 1;
   const { values } = changedRange;
 
+if (startCol === 4) { 
+  const usedRange = sheet.getUsedRange();
+  usedRange.load("columnCount");
+  await context.sync();
+
+  const headerRange = sheet.getRangeByIndexes(4, 0, 1, usedRange.columnCount);
+  headerRange.load("values");
+  await context.sync();
+
+  const headers = headerRange.values[0];
+
+    for (let r = 0; r < changedRange.rowCount; r++) {
+      const rowNumber = startRow + r;
+
+      for (let c = 0; c < headers.length; c++) {
+        const header = headers[c];
+
+        if (
+            header === "" ||
+            header === null ||
+            header === undefined ||
+            !Number.isInteger(Number(header))
+        ) {
+            continue;
+        }
+
+        sheet.getCell(rowNumber - 1, c).formulas = [[
+          `=IF(INDEX(5:5,COLUMN())>'Final Quote Header & Lines'!N9,"",IF(INDEX(5:5,COLUMN())='Final Quote Header & Lines'!N9,CEILING(INDEX(D:D,ROW())/'Final Quote Header & Lines'!N9,1),FLOOR(INDEX(D:D,ROW())/'Final Quote Header & Lines'!N9,1)))`
+        ]];
+      }
+    }
+
+    await context.sync();
+  }
+
   for (let r = 0; r < changedRange.rowCount; r++) {
     const absoluteRow = startRow + r;
     if (absoluteRow <= HEADER_ROW) continue;
@@ -282,7 +315,7 @@ async function handleCostItemSheetChange(event, context) {
 export async function buildPayload() {
   let headerId = null;
 
-  await Excel.run(async (context) => {
+  await Excel.run({ delayForCellEdit: true }, async (context) => {
     const sheets = context.workbook.worksheets;
     sheets.load("items/name");
     await context.sync();
@@ -355,10 +388,11 @@ export function clearPendingChanges() {
 export async function handleSheetChange(event) {
   if (isListenerPaused) return;
   if (event.changeType !== "RangeEdited") return;
-  console.log(`Change detected on sheet ${event.worksheetId}, address ${event.address}, type ${event.changeType}`);
+  console.log("Detected change event:", event);
+  console.log(`Change detected on sheet ${event.worksheetId}, address ${event.address}, type ${event.changeType}, name ${event.worksheetName}`);
 
   try {
-    await Excel.run(async (context) => {
+    await Excel.run({ delayForCellEdit: true }, async (context) => {
       const sheet = context.workbook.worksheets.getItem(event.worksheetId);
       sheet.load("name");
       await context.sync();

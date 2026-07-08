@@ -249,7 +249,7 @@ const SalesforceSync = () => {
   };
 
   const fetchDynamicStructuredRows = async (ranges) => {
-    return Excel.run(async (context) => {
+    return Excel.run({ delayForCellEdit: true }, async (context) => {
       const HEADER_ROW = 5;
       const loaded = [];
 
@@ -431,7 +431,7 @@ const SalesforceSync = () => {
     setIsRefreshing(true);
     let result = null;
     try {
-      await Excel.run(async (context) => {
+      await Excel.run({ delayForCellEdit: true }, async (context) => {
         const sheet = context.workbook.worksheets.getItem(sheetName);
         const idCell = sheet.getRange("J7");
         const usedRange = sheet.getUsedRange();
@@ -523,11 +523,11 @@ const SalesforceSync = () => {
                 message: "Writing Salesforce IDs to Excel"
             });
             await populateSalesforceIds(update);
-            await Excel.run(async (context) => {
+            await lockEntireSheet();
+            await Excel.run({ delayForCellEdit: true }, async (context) => {
               await context.sync();
             });
             await readExcelData();
-            await lockEntireSheet();
             if (quoteId) {
               setPushState({
                   status: "Uploading",
@@ -582,7 +582,6 @@ const SalesforceSync = () => {
         setPushState(update);
         if (update.status === "Complete") {
             if (quoteId) {
-              console.log(`Uploading workbook for Quote ID: ${quoteId}`);
               await uploadWorkbook(quoteId);
             }
           clearPendingChanges();

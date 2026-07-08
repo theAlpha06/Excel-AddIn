@@ -60,7 +60,7 @@ const closeFileAsync = (file) =>
 
 export async function uploadWorkbook(parentId) {
   // Give Excel a moment to finish writing changes
-  await Excel.run(async (context) => {
+  await Excel.run({ delayForCellEdit: true }, async (context) => {
     await context.sync();
   });
 

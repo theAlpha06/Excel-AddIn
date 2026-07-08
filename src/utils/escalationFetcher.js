@@ -2,7 +2,7 @@ import SalesforceService from "../services/SalesforceService";
 
 export async function fetchEscalationData(quantityRanges) {
     console.log("Fetching escalation data for quantity ranges:", quantityRanges);
-  return Excel.run(async (context) => {
+  return Excel.run({ delayForCellEdit: true }, async (context) => {
     const workbook = context.workbook;
     const sheetCache = new Map();
 

@@ -41,7 +41,7 @@ const App = () => {
   }, [setPendingPayload]);
 
   async function registerChangeListener() {
-    await Excel.run(async (context) => {
+    await Excel.run({ delayForCellEdit: true }, async (context) => {
       context.workbook.worksheets.onChanged.add(handleSheetChange);
       await context.sync();
     });

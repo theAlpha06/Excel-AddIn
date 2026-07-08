@@ -11,16 +11,25 @@ const Home = () => {
   const [activeTab, setActiveTab] = useState("profile");
 
   const lockFields = async () => {
-    await Excel.run(async (context) => {
+    await Excel.run({ delayForCellEdit: true }, async (context) => {
       const sheet1 = context.workbook.worksheets.getItem(
         "Final Quote Header & Lines"
       );
-      const sheet2 = context.workbook.worksheets.getItem(
-        "Lines Template"
-      );
+
+      const worksheets = context.workbook.worksheets;
+      worksheets.load("items/name");
 
       sheet1.protection.load("protected");
-      sheet2.protection.load("protected");
+
+      await context.sync();
+
+      const lineTemplateSheets = worksheets.items.filter(sheet =>
+        sheet.name.startsWith("Lines Template")
+      );
+
+      lineTemplateSheets.forEach(sheet => {
+        sheet.protection.load("protected");
+      });
 
       await context.sync();
 
@@ -28,30 +37,35 @@ const Home = () => {
         sheet1.protection.unprotect();
       }
 
-      if (sheet2.protection.protected) {
-        sheet2.protection.unprotect();
-      }
+      lineTemplateSheets.forEach(sheet => {
+        if (sheet.protection.protected) {
+          sheet.protection.unprotect();
+        }
+      });
 
       sheet1.getUsedRange().format.protection.locked = false;
-      sheet2.getUsedRange().format.protection.locked = false;
-
       sheet1.getRange("A4:A18").format.protection.locked = true;
       sheet1.getRange("A20").format.protection.locked = true;
       sheet1.getRange("A21:I21").format.protection.locked = true;
       sheet1.getRange("G6:G13").format.protection.locked = true;
 
-      sheet2.getRange("A5:D5").format.protection.locked = true;
+      lineTemplateSheets.forEach(sheet => {
+        sheet.getUsedRange().format.protection.locked = false;
+        sheet.getRange("A5:D5").format.protection.locked = true;
+      });
 
       sheet1.protection.protect({
         allowAutoFilter: true,
         allowSort: true,
-        allowInsertRows: true
+        allowInsertRows: true,
       });
 
-      sheet2.protection.protect({
-        allowAutoFilter: true,
-        allowSort: true,
-        allowInsertRows: true
+      lineTemplateSheets.forEach(sheet => {
+        sheet.protection.protect({
+          allowAutoFilter: true,
+          allowSort: true,
+          allowInsertRows: true,
+        });
       });
 
       await context.sync();

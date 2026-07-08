@@ -186,7 +186,7 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
   const accessToken = Office.context.document.settings.get("salesforce_access_token");
   const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
 
-  const CHUNK_SIZE = 200;
+  const CHUNK_SIZE = 100;
 
   for (let i = 0; i < records.length; i += CHUNK_SIZE) {
     const chunk = records.slice(i, i + CHUNK_SIZE);

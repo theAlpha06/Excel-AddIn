@@ -4,11 +4,14 @@ import { pauseListener, resumeListener } from "./diff";
 export async function populateSalesforceIds(apiResult) {
   pauseListener();
   try {
-    await Excel.run(async (context) => {
       const results = apiResult.results.filter(
         (r) => r.status === "created" && r.cell && r.salesforceId
       );
 
+      const quoteId = apiResult.insertedIds?.quoteIds?.[0];
+      const quoteNumber = await SalesforceService.query(`SELECT QuoteNumber FROM Quote WHERE Id = '${quoteId}'`);
+
+    await Excel.run({ delayForCellEdit: true }, async (context) => {
       const sheetMap = new Map();
       for (const record of results) {
         const [sheetName, rowStr] = record.cell.split("!");
@@ -37,13 +40,9 @@ export async function populateSalesforceIds(apiResult) {
         }
       }
       
-      const quoteId = apiResult.insertedIds?.quoteIds?.[0];
-      const quoteNumber = await SalesforceService.query(`SELECT QuoteNumber FROM Quote WHERE Id = '${quoteId}'`);
-
       if (quoteId) {
         const quoteSheet = sheetByName.get("Final Quote Header & Lines");
         if (quoteSheet) {
-          console.log(`Writing Quote ID ${quoteId} → Final Quote Header & Lines!J7`);
           quoteSheet.getRange("J7").values = [[quoteId]];
           quoteSheet.getRange("J14").values = [[quoteNumber?.records?.[0]?.QuoteNumber || ""]];
         } 

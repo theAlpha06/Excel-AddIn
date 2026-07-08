@@ -18,7 +18,7 @@ const WorkBookAPI = () => {
 
   async function fetchParentId() {
     try {
-      await Excel.run(async (context) => {
+      await Excel.run({ delayForCellEdit: true }, async (context) => {
         const sheet = context.workbook.worksheets.getItem(
           "Final Quote Header & Lines"
         );
@@ -40,7 +40,7 @@ const WorkBookAPI = () => {
   }
 
   async function passwordProtectDataInWorksheet() {
-    await Excel.run(async (context) => {
+    await Excel.run({ delayForCellEdit: true }, async (context) => {
       let activeSheet = context.workbook.worksheets.getActiveWorksheet();
 
       activeSheet.load("protection/protected");
@@ -54,7 +54,7 @@ const WorkBookAPI = () => {
   }
 
   async function addOverlayOnUsedRange() {
-    await Excel.run(async (context) => {
+    await Excel.run({ delayForCellEdit: true }, async (context) => {
       const sheet = context.workbook.worksheets.getActiveWorksheet();
 
       const usedRange = sheet.getUsedRange();

@@ -15,7 +15,7 @@ Office.onReady((info) => {
 
 export async function run() {
   try {
-    await Excel.run(async (context) => {
+    await Excel.run({ delayForCellEdit: true }, async (context) => {
       /**
        * Insert your Excel code here
        */
