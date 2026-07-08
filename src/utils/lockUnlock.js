@@ -73,6 +73,9 @@ export async function restoreDefaultProtection() {
     sheet1.getRange("A20").format.protection.locked = true;
     sheet1.getRange("A21:I21").format.protection.locked = true;
     sheet1.getRange("G6:G13").format.protection.locked = true;
+    sheet1.getRange("G15:L15").format.protection.locked = true;
+    sheet1.getRange("G5:L5").format.protection.locked = true;
+    sheet1.getRange("G14:I14").format.protection.locked = true;
 
     lineTemplateSheets.forEach(sheet => {
       sheet.getUsedRange().format.protection.locked = false;

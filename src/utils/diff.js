@@ -241,7 +241,7 @@ if (startCol === 4) {
         }
 
         sheet.getCell(rowNumber - 1, c).formulas = [[
-          `=IF(INDEX(5:5,COLUMN())>'Final Quote Header & Lines'!N9,"",IF(INDEX(5:5,COLUMN())='Final Quote Header & Lines'!N9,CEILING(INDEX(D:D,ROW())/'Final Quote Header & Lines'!N9,1),FLOOR(INDEX(D:D,ROW())/'Final Quote Header & Lines'!N9,1)))`
+          `=IF(INDEX(5:5,COLUMN())>'Final Quote Header & Lines'!J15,"",IF(INDEX(5:5,COLUMN())='Final Quote Header & Lines'!J15,CEILING(INDEX(D:D,ROW())/'Final Quote Header & Lines'!J15,1),FLOOR(INDEX(D:D,ROW())/'Final Quote Header & Lines'!J15,1)))`
         ]];
       }
     }

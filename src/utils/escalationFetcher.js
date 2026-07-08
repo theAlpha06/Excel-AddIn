@@ -1,7 +1,7 @@
 import SalesforceService from "../services/SalesforceService";
 
 export async function fetchEscalationData(quantityRanges) {
-    console.log("Fetching escalation data for quantity ranges:", quantityRanges);
+  console.log("Fetching escalation data for quantity ranges:", quantityRanges);
   return Excel.run({ delayForCellEdit: true }, async (context) => {
     const workbook = context.workbook;
     const sheetCache = new Map();
@@ -35,26 +35,24 @@ export async function fetchEscalationData(quantityRanges) {
       const headers = values[4];
 
       const escalationColumns = [];
+      const quantityColumns = []; 
 
       headers.forEach((header, index) => {
         console.log(`Checking header: ${header} at index ${index}`);
-        if (
-          typeof header === "string" &&
-          (
+
+        if (typeof header === "string") {
+          if (
             header.includes("Sale Escalation (") ||
             header.includes("Cost Escalation (")
-          )
-        ) {
-          escalationColumns.push({
-            index,
-            header,
-          });
+          ) {
+            escalationColumns.push({ index, header });
+          }
+        } else if (typeof header === "number" && Number.isInteger(header) && header >= 1) {
+          quantityColumns.push({ index, yearNumber: header });
         }
       });
 
-      const [startRow, endRow] = rangeAddress
-        .split(":")
-        .map(Number);
+      const [startRow, endRow] = rangeAddress.split(":").map(Number);
 
       for (let excelRow = startRow; excelRow <= endRow; excelRow++) {
         const row = values[excelRow - 1];
@@ -62,16 +60,24 @@ export async function fetchEscalationData(quantityRanges) {
         if (!row) continue;
 
         const escalationValues = {};
-
         escalationColumns.forEach((col) => {
           escalationValues[col.header] = row[col.index];
+        });
+
+        const quantityValues = {};
+        quantityColumns.forEach((col) => {
+          const val = row[col.index];
+          if (val !== "" && val != null) {
+            quantityValues[col.yearNumber] = val;
+          }
         });
 
         result.push({
           sheetName,
           rowNumber: excelRow,
-          salesforceId: row[0], 
+          salesforceId: row[0],
           escalations: escalationValues,
+          quantities: quantityValues,
         });
       }
     }
@@ -79,6 +85,7 @@ export async function fetchEscalationData(quantityRanges) {
     await updateEscalations(result);
   });
 }
+
 export async function updateEscalations(escalationData) {
   const parentIds = [
     ...new Set(
@@ -105,7 +112,6 @@ export async function updateEscalations(escalationData) {
     `;
 
     const queryResult = await SalesforceService.query(soql);
-
     allRecords.push(...queryResult.records);
   }
 
@@ -115,19 +121,17 @@ export async function updateEscalations(escalationData) {
     if (!yearMap.has(record.ParentQuoteCostLine__c)) {
       yearMap.set(record.ParentQuoteCostLine__c, new Map());
     }
-
     yearMap
       .get(record.ParentQuoteCostLine__c)
       .set(Number(record.YearNumber__c), record.Id);
   }
 
-  const updateMap = new Map();
+  const updateMap = new Map(); 
 
   for (const row of escalationData) {
     if (!row.salesforceId) continue;
 
     const yearLookup = yearMap.get(row.salesforceId);
-
     if (!yearLookup) continue;
 
     for (const [header, value] of Object.entries(row.escalations)) {
@@ -136,40 +140,51 @@ export async function updateEscalations(escalationData) {
       const match = header.match(
         /(Sale|Cost) Escalation \((\d+)(?:st|nd|rd|th) Year\)/
       );
-
       if (!match) continue;
 
       const type = match[1];
       const year = Number(match[2]);
 
-      const recordId = yearLookup.get(year);
-
+      const recordId = year === 1 ? row.salesforceId : yearLookup.get(year);
       if (!recordId) continue;
 
-      if (!updateMap.has(recordId)) {
-        updateMap.set(recordId, {
-          Id: recordId,
-          UniqueText__c: `${recordId}-${Date.now()}`
-        });
-      }
-
-      const updateRecord = updateMap.get(recordId);
+      ensureUpdateRecord(updateMap, recordId);
 
       if (type === "Sale") {
-        updateRecord.SaleEscalation__c = Number(value);
+        updateMap.get(recordId).SaleEscalation__c = Number(value);
       } else {
-        updateRecord.CostEscalation__c = Number(value);
+        updateMap.get(recordId).CostEscalation__c = Number(value);
       }
+    }
+
+    for (const [yearStr, value] of Object.entries(row.quantities)) {
+      const year = Number(yearStr);
+
+      const recordId = year === 1 ? row.salesforceId : yearLookup.get(year);
+      if (!recordId) continue;
+
+      ensureUpdateRecord(updateMap, recordId);
+      updateMap.get(recordId).ManualQuantity__c = Number(value);
     }
   }
 
   const updates = [...updateMap.values()];
 
-
   if (!updates.length) {
-    console.log("No escalation records to update.");
+    console.log("No records to update.");
     return;
   }
 
+  console.log(`Sending ${updates.length} record(s) to Salesforce.`);
   await SalesforceService.updateEscalationRecords(updates);
+}
+
+
+function ensureUpdateRecord(updateMap, recordId) {
+  if (!updateMap.has(recordId)) {
+    updateMap.set(recordId, {
+      Id: recordId,
+      UniqueText__c: `${recordId}-${Date.now()}`,
+    });
+  }
 }

@@ -5,7 +5,6 @@ class SalesforceService {
     const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
 
     await onStatusUpdate({ status: "Pending", message: "Submitting records…" });
-    console.log("Pushing data to Salesforce:", data);
     const pushRes = await fetch("http://localhost:5000/salesforce/v2/pushRecords", {
       method: "POST",
       headers: {
@@ -72,7 +71,6 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
   static async query(soqlQuery) {
     const accessToken = Office.context.document.settings.get("salesforce_access_token");
     const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
-    console.log(accessToken);
     const response = await fetch("http://localhost:5000/salesforce/services/data/v58.0/query", {
       method: "POST",
       headers: {
@@ -160,7 +158,6 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
   static async updateRecord(objectName, recordId, fields) {
     const accessToken = Office.context.document.settings.get("salesforce_access_token");
     const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
-    console.log(`Updating record ${objectName}/${recordId} with fields:`, fields);
     const response = await fetch("http://localhost:5000/salesforce/update", {
       method: "POST",
       headers: {
@@ -181,40 +178,41 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
   }
 
   static async updateEscalationRecords(records) {
-  await Office.context.document.settings.refreshAsync();
+    console.log("Updating escalation records:", JSON.stringify(records, null, 2));
+    await Office.context.document.settings.refreshAsync();
 
-  const accessToken = Office.context.document.settings.get("salesforce_access_token");
-  const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
+    const accessToken = Office.context.document.settings.get("salesforce_access_token");
+    const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
 
-  const CHUNK_SIZE = 100;
+    const CHUNK_SIZE = 100;
 
-  for (let i = 0; i < records.length; i += CHUNK_SIZE) {
-    const chunk = records.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < records.length; i += CHUNK_SIZE) {
+      const chunk = records.slice(i, i + CHUNK_SIZE);
 
-    const response = await fetch(
-      "http://localhost:5000/salesforce/updateEscalations",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "sf-access-token": accessToken,
-          "sf-instance-url": instanceUrl,
-        },
-        body: JSON.stringify({
-          records: chunk,
-        }),
+      const response = await fetch(
+        "http://localhost:5000/salesforce/updateEscalations",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "sf-access-token": accessToken,
+            "sf-instance-url": instanceUrl,
+          },
+          body: JSON.stringify({
+            records: chunk,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Failed to update records");
       }
-    );
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.message || "Failed to update escalation records");
+      const result = await response.json();
+      console.log(`Updated batch ${Math.floor(i / CHUNK_SIZE) + 1}:`, result);
     }
-
-    const result = await response.json();
-    console.log("Updated escalation batch:", result);
   }
-}
 }
 
 export default SalesforceService;

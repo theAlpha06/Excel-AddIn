@@ -397,7 +397,6 @@ const SalesforceSync = () => {
             })),
         };
       }
-      console.log(quantityRanges);
       return {
         ...lineFields,
         Product2Id: productId,
@@ -423,7 +422,6 @@ const SalesforceSync = () => {
     ];
 
     setQuoteData(quoteData);
-    console.log("Prepared quote data:", JSON.stringify(quoteData, null, 2));
     return quoteData;
   };
 
