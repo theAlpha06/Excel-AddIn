@@ -149,7 +149,7 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
       }),
     });
     if (!response.ok) {
-      const errorData = await response.json();
+      const errorData = await response.json();                                                    
       throw new Error(errorData.message || `Upload failed: ${response.status}`);
     }
     return response.json();
