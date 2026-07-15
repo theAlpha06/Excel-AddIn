@@ -341,6 +341,7 @@ const SalesforceSync = () => {
     });
 
     const productMap = await fetchProductMapByPart([...partSet]);
+    console.log("raw lines", rawLines);
 
     const quoteLines = rawLines.map((line) => {
       const { quantityRange, Part, ...lineFields } = line;
@@ -367,7 +368,7 @@ const SalesforceSync = () => {
           PricebookEntryId: opp.priceBookId,
           quoteLineCosts: costRows
             .filter((r) => {
-              const quantity = r["Quantity"];
+              const quantity = r["Total Quantity"];
               const part = r["Part"];
               const partDescription = r["Part Description"];
 
@@ -420,7 +421,7 @@ const SalesforceSync = () => {
         quoteLines,
       },
     ];
-
+    console.log(JSON.stringify(quoteData, null, 2));
     setQuoteData(quoteData);
     return quoteData;
   };
