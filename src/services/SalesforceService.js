@@ -36,7 +36,7 @@ class SalesforceService {
   }
 
 
-static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 10000, maxAttempts = 200 }) {
+static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 10000, maxAttempts = 300 }) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, interval));
 
