@@ -5,55 +5,63 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Salesforce Authentication Callback</title>
     <script type="text/javascript">
-        window.onload = function() {
-            var hash = window.location.hash.substring(1);
-            var params = {};
-            
-            hash.split('&').forEach(function(pair) {
-                var parts = pair.split('=');
-                params[parts[0]] = decodeURIComponent(parts[1]);
-            });
-            
-            if (params.access_token && params.instance_url) {
-                try {
-                    var message = {
-                        access_token: params.access_token,
-                        instance_url: params.instance_url
-                    };
-                    
-                    if (window.opener) {
-                        window.opener.postMessage(JSON.stringify(message), "*");
-                    } else {
-                        if (window.Office && Office.context.ui) {
-                            Office.context.ui.messageParent(JSON.stringify(message));
-                        }
-                    }
-                    
-                    document.getElementById('status').textContent = 'Authentication successful! You can close this window.';
-                    document.getElementById('status').className = 'success';
-                    
-                    setTimeout(() => {
-                        window.close();
-                    }, 100);
-                } catch (error) {
-                    document.getElementById('status').textContent = 'Error sending token: ' + error.message;
-                    document.getElementById('status').className = 'error';
-                    console.error('Error in callback handler:', error);
+        var handled = false;
+
+        function sendToParent(payload) {
+            var message = JSON.stringify(payload);
+            try {
+                if (window.opener) {
+                    window.opener.postMessage(message, "*");
+                    return true;
                 }
-            } else if (params.error) {
-                document.getElementById('status').textContent = 'Authentication failed: ' + params.error;
-                document.getElementById('status').className = 'error';
-                
-                try {
-                    if (window.Office && Office.context.ui) {
-                        Office.context.ui.messageParent(JSON.stringify({ error: params.error }));
-                    }
-                } catch (e) {
-                    console.error('Error sending error message:', e);
+            } catch (e) {
+                console.error('postMessage to opener failed:', e);
+            }
+            try {
+                if (window.Office && Office.context && Office.context.ui) {
+                    Office.context.ui.messageParent(message);
+                    return true;
                 }
+            } catch (e) {
+                console.error('messageParent failed:', e);
+            }
+            return false;
+        }
+
+        function handleResult() {
+            if (handled) return;
+            handled = true;
+
+            var params = new URLSearchParams(window.location.search);
+            var code = params.get('code');
+            var error = params.get('error');
+            var statusEl = document.getElementById('status');
+
+            if (code) {
+                var sent = sendToParent({ code: code });
+                statusEl.textContent = sent
+                    ? 'Authentication successful! You can close this window.'
+                    : 'Authentication succeeded, but could not notify the add-in. Please close this window and try connecting again.';
+                statusEl.className = sent ? 'success' : 'error';
             } else {
-                document.getElementById('status').textContent = 'No token found in URL';
-                document.getElementById('status').className = 'error';
+                var errorMessage = error || 'No authorization code found in URL';
+                sendToParent({ error: errorMessage });
+                statusEl.textContent = 'Authentication failed: ' + errorMessage;
+                statusEl.className = 'error';
+            }
+
+            setTimeout(() => {
+                window.close();
+            }, 300);
+        }
+
+        window.onload = function() {
+            if (window.Office) {
+                Office.onReady().then(handleResult);
+                // Fallback in case Office.onReady never resolves (e.g. opened outside an Office host).
+                setTimeout(handleResult, 2000);
+            } else {
+                handleResult();
             }
         };
     </script>

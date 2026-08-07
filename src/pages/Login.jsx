@@ -1,11 +1,12 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { ChoiceGroup, DefaultButton, mergeStyles } from "@fluentui/react";
 import { useOfficeContext } from "../hooks/useOfficeContext";
 
 const Login = ({orgType, setOrgType}) => {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState(null);
-    const [dialog, setDialog] = useState(null);
+    const dialogRef = useRef(null);
+    const authHandledRef = useRef(false);
     const { isOfficeReady } = useOfficeContext();
 
     const loginContainerStyles = mergeStyles({
@@ -46,39 +47,73 @@ const Login = ({orgType, setOrgType}) => {
     const REACT_APP_CONSUMER_KEY="3MVG9GCMQoQ6rpzQm797ZYHBww6Iye8XtvMqgddHtVjTr83ocGxvaeyGNJuUUf_dDrt688z_OV9wi8c2RC90w";
     const REACT_APP_REDIRECT_URI="https://localhost:3000/auth-callback.html";
 
-    const processMessage = (message) => {
-        if (dialog) {
-            dialog.close();
+    const processMessage = async (message) => {
+        authHandledRef.current = true;
+
+        const { code, error: authError } = JSON.parse(message.message);
+
+        if (authError) {
+            setIsLoading(false);
+            setError(`Authentication failed: ${authError}`);
+            if (dialogRef.current) dialogRef.current.close();
+            return;
         }
-        const { access_token, instance_url } = JSON.parse(message.message);
-        if (access_token && instance_url) {
-            try {
-                Office.context.document.settings.set("salesforce_access_token", access_token);
-                Office.context.document.settings.set("salesforce_instance_url", instance_url);
-                Office.context.document.settings.saveAsync((result) => {
-                    if (result.status === Office.AsyncResultStatus.Failed) {
-                        console.error("Failed to save settings:", result.error.message);
-                        setError(`Failed to save connection settings: ${result.error.message}`);
-                    } else {
-                        setError(null);
-                        setIsLoading(false);
-                        window.location.href = "taskpane.html";
-                    }
-                });
-            } catch (error) {
-                setError(`Error processing authentication response: ${error.message}`);
+
+        if (!code) {
+            setIsLoading(false);
+            setError("Authentication failed: No authorization code received");
+            if (dialogRef.current) dialogRef.current.close();
+            return;
+        }
+
+        try {
+            const tokenRes = await fetch("http://localhost:5000/salesforce/oauth/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    code,
+                    redirect_uri: REACT_APP_REDIRECT_URI,
+                    login_url: LOGIN_URL,
+                }),
+            });
+
+            const data = await tokenRes.json();
+
+            if (!tokenRes.ok || !data.access_token || !data.instance_url) {
+                throw new Error(data.message || "Failed to exchange authorization code");
             }
-        } else {
-            setError("Authentication failed: No access token received");
+
+            if (dialogRef.current) dialogRef.current.close();
+
+            Office.context.document.settings.set("salesforce_access_token", data.access_token);
+            Office.context.document.settings.set("salesforce_instance_url", data.instance_url);
+            Office.context.document.settings.saveAsync((result) => {
+                if (result.status === Office.AsyncResultStatus.Failed) {
+                    console.error("Failed to save settings:", result.error.message);
+                    setError(`Failed to save connection settings: ${result.error.message}`);
+                    setIsLoading(false);
+                } else {
+                    setError(null);
+                    setIsLoading(false);
+                    window.location.href = "taskpane.html";
+                }
+            });
+        } catch (error) {
+            if (dialogRef.current) dialogRef.current.close();
+            setIsLoading(false);
+            setError(`Error processing authentication response: ${error.message}`);
         }
     };
 
-    const processDialogEvent = (message) => {
-        setIsLoading(false);
-        setError("Dialog Box was closed by user");
-        if (dialog) {
-            dialog.close();
+    const processDialogEvent = () => {
+        if (authHandledRef.current) {
+            // Expected: the dialog closes itself right after we already processed
+            // its message (either via our own close() call above, or because the
+            // Office dialog API auto-closes after messageParent). Nothing to report.
+            return;
         }
+        setIsLoading(false);
+        setError("Sign-in was cancelled.");
     };
 
     const startOAuth = async () => {
@@ -95,12 +130,14 @@ const Login = ({orgType, setOrgType}) => {
         try {
             setIsLoading(true);
             setError(null);
+            authHandledRef.current = false;
 
             const authUrl =
                 `${LOGIN_URL}/services/oauth2/authorize?` +
-                `response_type=token` +
+                `response_type=code` +
                 `&client_id=${REACT_APP_CONSUMER_KEY}` +
-                `&redirect_uri=${encodeURIComponent(REACT_APP_REDIRECT_URI)}`;
+                `&redirect_uri=${encodeURIComponent(REACT_APP_REDIRECT_URI)}` +
+                `&prompt=login`;
 
             Office.context.ui.displayDialogAsync(
                 authUrl,
@@ -112,7 +149,7 @@ const Login = ({orgType, setOrgType}) => {
                         setIsLoading(false);
                     } else {
                         const dialogInstance = result.value;
-                        setDialog(dialogInstance);
+                        dialogRef.current = dialogInstance;
 
                         dialogInstance.addEventHandler(Office.EventType.DialogMessageReceived, processMessage);
                         dialogInstance.addEventHandler(
