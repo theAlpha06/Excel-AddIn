@@ -24,7 +24,7 @@ const Home = () => {
       await context.sync();
 
       const lineTemplateSheets = worksheets.items.filter(sheet =>
-        sheet.name.startsWith("Lines Template")
+        sheet.name.startsWith("Template")
       );
 
       lineTemplateSheets.forEach(sheet => {

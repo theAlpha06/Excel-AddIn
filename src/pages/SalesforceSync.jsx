@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Progress from "../components/Progress";
 import SalesforceService from "../services/SalesforceService";
 import { uploadWorkbook } from "../services/WorkBookService";
@@ -23,7 +23,9 @@ const SalesforceSync = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [quoteData, setQuoteData] = useState([]);
-  const [quantityRanges, setQuantityRanges] = useState([]);
+  // A ref rather than state: handlePush would close over the render-time value and so could
+  // not see ranges found by the readExcelData() calls it makes itself. Nothing renders these.
+  const quantityRangesRef = useRef([]);
   let quoteId;
   const [quoteExistsOnLoad, setQuoteExistsOnLoad] = useState(false);
   const sheetName = "Final Quote Header & Lines";
@@ -285,6 +287,9 @@ const SalesforceSync = () => {
       await context.sync();
 
       const results = [];
+      // Quote lines reference rolling, overlapping row windows on the cost sheet, so the
+      // same physical row can be fetched by more than one range. Keep one entry per cell.
+      const seenCells = new Set();
 
       for (const { sName, headerRange, dataRange, rowStart } of toLoad) {
         const headers = headerRange.values[0].map((h) =>
@@ -295,11 +300,14 @@ const SalesforceSync = () => {
         );
         dataRange.values.forEach((row, i) => {
           if (!row || row.every((cell) => cell === "" || cell === null)) return;
+          const cellRef = `${sName}!${rowStart + i}`;
+          if (seenCells.has(cellRef)) return;
+          seenCells.add(cellRef);
           const rowData = {};
           row.forEach((cell, colIdx) => {
             if (cell !== "") rowData[headers[colIdx] || `Col_${colIdx + 1}`] = cell;
           });
-          rowData.cell = `${sName}!${rowStart + i}`;
+          rowData.cell = cellRef;
           rowData.rowIndex = rowStart + i;
           results.push(rowData);
         });
@@ -327,9 +335,12 @@ const SalesforceSync = () => {
       }
     });
 
+    const uniqueRanges = [...rangeMap.values()];
+    quantityRangesRef.current = uniqueRanges;
+
     let allCostRows = [];
-    if (rangeMap.size > 0) {
-      allCostRows = await fetchDynamicStructuredRows([...rangeMap.values()]);
+    if (uniqueRanges.length > 0) {
+      allCostRows = await fetchDynamicStructuredRows(uniqueRanges);
     }
 
     const partSet = new Set();
@@ -345,7 +356,6 @@ const SalesforceSync = () => {
 
     const quoteLines = rawLines.map((line) => {
       const { quantityRange, Part, ...lineFields } = line;
-      setQuantityRanges((prev) => [...prev, quantityRange]);
       const productId = productMap[String(Part ?? "").trim()];
       if (!productId) console.warn(`No Product found for Part: ${Part}`);
 
@@ -355,11 +365,17 @@ const SalesforceSync = () => {
         const rowStart = parseInt(rowStartStr);
         const rowEnd = parseInt(rowEndStr);
 
+        // The same cost row may legitimately belong to several quote lines (their row
+        // windows overlap), but it must never appear twice within one quote line.
+        const seenCostCells = new Set();
         const costRows = allCostRows.filter((r) => {
           const colonIdx = r.cell.lastIndexOf("!");
           const rSheet = r.cell.substring(0, colonIdx);
           const rRowNum = parseInt(r.cell.substring(colonIdx + 1));
-          return rSheet === costSheet && rRowNum >= rowStart && rRowNum <= rowEnd;
+          if (rSheet !== costSheet || rRowNum < rowStart || rRowNum > rowEnd) return false;
+          if (seenCostCells.has(r.cell)) return false;
+          seenCostCells.add(r.cell);
+          return true;
         });
 
         return {
@@ -494,6 +510,7 @@ const SalesforceSync = () => {
     }
 
     try {
+      console.log("Starting push to Salesforce with data:", JSON.stringify(dataToPush, null, 2));
       await SalesforceService.pushDataToSalesforce(dataToPush, async (update) => {
         const recordErrors = update.results?.filter((r) => r.status === "error") ?? [];
         
@@ -534,16 +551,34 @@ const SalesforceSync = () => {
               });
               await uploadWorkbook(quoteId);
             }
-            if(quantityRanges.length > 0) {
+            const rangesToSync = quantityRangesRef.current;
+            let unmatchedValues = 0;
+            if(rangesToSync.length > 0) {
               setPushState({
                   status: "Updating",
                   message: "Updating escalation records"
               });
-              const data = await fetchEscalationData(quantityRanges);
+              const escalationResult = await fetchEscalationData(rangesToSync);
+              const { failures = [], skipped = [] } = escalationResult ?? {};
+              // Salesforce rejecting a record is a real failure. A value with no record to go to
+              // is not: the quote can hold fewer years than the sheet has year columns, and the
+              // sync is still complete without those years.
+              if (failures.length) {
+                setPushState({
+                  status: "Failed",
+                  message: `Escalation/quantity update incomplete: ${failures.length} rejected by Salesforce. See console for details.`,
+                });
+                setIsPushing(false);
+                await restoreDefaultProtection();
+                return;
+              }
+              unmatchedValues = skipped.length;
             }
             setPushState({
                 status: "Complete",
-                message: "Synchronization completed successfully"
+                message: unmatchedValues
+                  ? `Synchronization completed — ${unmatchedValues} value(s) had no matching year record. See console for details.`
+                  : "Synchronization completed successfully"
             });
             await restoreDefaultProtection();
           } catch (err) {

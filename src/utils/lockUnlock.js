@@ -8,7 +8,7 @@ export async function lockEntireSheet() {
     await context.sync();
 
     const lineTemplateSheets = worksheets.items.filter(sheet =>
-      sheet.name.startsWith("Lines Template")
+      sheet.name.startsWith("Template")
     );
 
     try {
@@ -55,7 +55,7 @@ export async function restoreDefaultProtection() {
     await context.sync();
 
     const lineTemplateSheets = worksheets.items.filter(sheet =>
-      sheet.name.startsWith("Lines Template")
+      sheet.name.startsWith("Template")
     );
 
     try {

@@ -36,7 +36,7 @@ class SalesforceService {
   }
 
 
-static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 10000, maxAttempts = 300 }) {
+static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, interval = 20000, maxAttempts = 3000 }) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, interval));
 
@@ -185,6 +185,7 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
     const instanceUrl = Office.context.document.settings.get("salesforce_instance_url");
 
     const CHUNK_SIZE = 100;
+    const failures = [];
 
     for (let i = 0; i < records.length; i += CHUNK_SIZE) {
       const chunk = records.slice(i, i + CHUNK_SIZE);
@@ -211,7 +212,20 @@ static async pollStatus({ jobKey, accessToken, instanceUrl, onStatusUpdate, inte
 
       const result = await response.json();
       console.log(`Updated batch ${Math.floor(i / CHUNK_SIZE) + 1}:`, result);
+
+      // The route sends allOrNone:false, so Salesforce reports rejections per record and
+      // still returns 200. Without this check a failed update is indistinguishable from a
+      // successful one.
+      (Array.isArray(result) ? result : []).forEach((r, idx) => {
+        if (r && r.success === false) {
+          const record = chunk[idx];
+          console.error(`Escalation update rejected for ${record?.Id}:`, r.errors);
+          failures.push({ id: record?.Id, fields: record, errors: r.errors });
+        }
+      });
     }
+
+    return { failures };
   }
 }
 
