@@ -47,6 +47,24 @@ const Login = ({orgType, setOrgType}) => {
     const REACT_APP_CONSUMER_KEY="3MVG9GCMQoQ6rpzQm797ZYHBww6Iye8XtvMqgddHtVjTr83ocGxvaeyGNJuUUf_dDrt688z_OV9wi8c2RC90w";
     const REACT_APP_REDIRECT_URI="https://localhost:3000/auth-callback.html";
 
+    // Closing the auth dialog is a race nobody owns: auth-callback.html closes itself shortly
+    // after messageParent, the user can dismiss it, and the Office host tears it down on its
+    // own. close() on a dialog that is already gone throws
+    // "Function close call failed, error code: 12006", so every close goes through here — at
+    // most once, and never fatally. Letting it throw used to abort processMessage before the
+    // access token was saved (and the catch block's own close() threw a second time), which is
+    // why a successful first sign-in still landed back on the login screen.
+    const closeDialog = () => {
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        dialogRef.current = null;
+        try {
+            dialog.close();
+        } catch (err) {
+            console.warn("Auth dialog was already closed:", err?.message ?? err);
+        }
+    };
+
     const processMessage = async (message) => {
         authHandledRef.current = true;
 
@@ -55,14 +73,14 @@ const Login = ({orgType, setOrgType}) => {
         if (authError) {
             setIsLoading(false);
             setError(`Authentication failed: ${authError}`);
-            if (dialogRef.current) dialogRef.current.close();
+            closeDialog();
             return;
         }
 
         if (!code) {
             setIsLoading(false);
             setError("Authentication failed: No authorization code received");
-            if (dialogRef.current) dialogRef.current.close();
+            closeDialog();
             return;
         }
 
@@ -83,10 +101,14 @@ const Login = ({orgType, setOrgType}) => {
                 throw new Error(data.message || "Failed to exchange authorization code");
             }
 
-            if (dialogRef.current) dialogRef.current.close();
-
+            // Hold the token before touching the dialog. set() is in-memory and cannot fail on
+            // a dialog teardown, so ordering it first means no close-time surprise can cost the
+            // user the sign-in they just completed.
             Office.context.document.settings.set("salesforce_access_token", data.access_token);
             Office.context.document.settings.set("salesforce_instance_url", data.instance_url);
+
+            closeDialog();
+
             Office.context.document.settings.saveAsync((result) => {
                 if (result.status === Office.AsyncResultStatus.Failed) {
                     console.error("Failed to save settings:", result.error.message);
@@ -99,13 +121,17 @@ const Login = ({orgType, setOrgType}) => {
                 }
             });
         } catch (error) {
-            if (dialogRef.current) dialogRef.current.close();
+            closeDialog();
             setIsLoading(false);
             setError(`Error processing authentication response: ${error.message}`);
         }
     };
 
     const processDialogEvent = () => {
+        // The dialog is gone by the time this fires, so drop the handle: keeping it would let a
+        // later close() call reach a dead dialog and throw 12006.
+        dialogRef.current = null;
+
         if (authHandledRef.current) {
             // Expected: the dialog closes itself right after we already processed
             // its message (either via our own close() call above, or because the

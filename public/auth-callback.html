@@ -9,14 +9,10 @@
 
         function sendToParent(payload) {
             var message = JSON.stringify(payload);
-            try {
-                if (window.opener) {
-                    window.opener.postMessage(message, "*");
-                    return true;
-                }
-            } catch (e) {
-                console.error('postMessage to opener failed:', e);
-            }
+            // messageParent first: it is the only channel the task pane listens on
+            // (Login.jsx binds DialogMessageReceived). Some hosts leave window.opener set, and
+            // trying postMessage first meant the code was posted where nobody was listening and
+            // the sign-in silently never completed.
             try {
                 if (window.Office && Office.context && Office.context.ui) {
                     Office.context.ui.messageParent(message);
@@ -24,6 +20,14 @@
                 }
             } catch (e) {
                 console.error('messageParent failed:', e);
+            }
+            try {
+                if (window.opener) {
+                    window.opener.postMessage(message, "*");
+                    return true;
+                }
+            } catch (e) {
+                console.error('postMessage to opener failed:', e);
             }
             return false;
         }

@@ -23,9 +23,9 @@ export async function lockEntireSheet() {
 
     sheet1.getUsedRange().format.protection.locked = true;
 
-    lineTemplateSheets.forEach(sheet => {
-      sheet.getUsedRange().format.protection.locked = true;
-    });
+    // lineTemplateSheets.forEach(sheet => {
+    //   sheet.getUsedRange().format.protection.locked = true;
+    // });
 
     sheet1.protection.protect({
       allowAutoFilter: true,
@@ -68,6 +68,9 @@ export async function restoreDefaultProtection() {
       } catch (_) {}
     });
 
+    // Clear the sheet-wide lock that lockEntireSheet() applies before re-locking only the
+    // ranges below. Without this the used range stays locked, and the push fails writing the
+    // Salesforce Ids into J7/J14 with "You cannot perform the requested operation."
     sheet1.getUsedRange().format.protection.locked = false;
     sheet1.getRange("A4:A18").format.protection.locked = true;
     sheet1.getRange("A20").format.protection.locked = true;
@@ -78,6 +81,9 @@ export async function restoreDefaultProtection() {
     sheet1.getRange("G14:I14").format.protection.locked = true;
 
     lineTemplateSheets.forEach(sheet => {
+      // Excel cells are locked by default, so the cost sheets need the same clearing before
+      // the header row is re-locked — otherwise column A (the Salesforce Ids) and the year
+      // quantity columns stay read-only on a protected sheet.
       sheet.getUsedRange().format.protection.locked = false;
       sheet.getRange("A5:D5").format.protection.locked = true;
     });
