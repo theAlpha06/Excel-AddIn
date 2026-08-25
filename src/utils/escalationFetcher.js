@@ -44,32 +44,97 @@ const toNumber = (value) => {
 
 const QUERY_CHUNK_SIZE = 100;
 
+// One getRangeByIndexes(0, 0, maxRow, width) over a ten-thousand-row cost sheet asks Excel for
+// hundreds of thousands of cells in a single request. Excel bundles everything queued since the
+// last sync into one payload, so the rows are read — and synced — in bounded blocks instead.
+const MAX_CELLS_PER_READ = 50000;
+
 // Child year lines are written by Apex, so one that is missing right now may simply not have
-// been created yet. Re-read before writing a value off as unmatched.
-const MAX_RESOLVE_ATTEMPTS = 3;
+// been created yet. Re-read before writing a value off as unmatched. A large quote needs longer
+// than a small one before Apex has created them all, hence the doubling backoff rather than a
+// flat wait.
+const MAX_RESOLVE_ATTEMPTS = 5;
 const RESOLVE_RETRY_DELAY_MS = 1500;
 
+// The one-at-a-time lookup below costs a round trip per record, so it is only worth doing for a
+// handful of stragglers. On a ten-thousand-line quote whose year lines Apex has not finished
+// creating, nearly every target is unresolved, and running it unbounded turned into tens of
+// thousands of sequential queries per year — which is the escalation step that never returns.
+const MAX_SINGLE_LOOKUPS = 25;
+
+// Read-only queries, so they can overlap. The DML further down deliberately does not.
+const QUERY_CONCURRENCY = 6;
+
+// Pretty-printing thousands of records blocks the UI thread for longer than the request it is
+// describing; past this many, log the count and let the console expand the array lazily.
+const MAX_LOGGED_RECORDS = 25;
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Runs `worker` over `items` with at most `limit` in flight, preserving input order. A hundred
+// chunked queries sent strictly one after another is the difference between a few seconds and
+// half a minute before any DML starts.
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
+
+// Salesforce caps a query response at 2,000 records and the backend exposes no queryMore, so a
+// chunk whose year lines overflow that comes back marked not done. Splitting it and asking again
+// is what keeps those year lines from going missing — a truncated read is indistinguishable from
+// "this cost line has no year lines", which is exactly what sends the resolver into its
+// expensive fallback path.
+async function queryYearRecords(parentIds) {
+  const soql = `
+      SELECT Id,
+             ParentQuoteCostLine__c,
+             YearNumber__c
+      FROM QuoteCostItem__c
+      WHERE ParentQuoteCostLine__c IN ('${parentIds.join("','")}')
+    `;
+
+  const queryResult = await SalesforceService.query(soql);
+
+  if (queryResult.done === false && parentIds.length > 1) {
+    const mid = Math.ceil(parentIds.length / 2);
+    console.warn(
+      `Year-line query for ${parentIds.length} cost line(s) came back truncated — splitting it.`
+    );
+    const halves = await Promise.all([
+      queryYearRecords(parentIds.slice(0, mid)),
+      queryYearRecords(parentIds.slice(mid)),
+    ]);
+    return halves.flat();
+  }
+
+  return queryResult.records ?? [];
+}
 
 // parent cost line Id → (year number → QuoteCostItem__c Id). Year 1 is the cost line itself
 // and so never appears here; the map only ever covers years 2..n.
 async function fetchYearMap(parentIds) {
   const yearMap = new Map();
 
+  const chunks = [];
   for (let i = 0; i < parentIds.length; i += QUERY_CHUNK_SIZE) {
-    const chunk = parentIds.slice(i, i + QUERY_CHUNK_SIZE);
+    chunks.push(parentIds.slice(i, i + QUERY_CHUNK_SIZE));
+  }
 
-    const soql = `
-      SELECT Id,
-             ParentQuoteCostLine__c,
-             YearNumber__c
-      FROM QuoteCostItem__c
-      WHERE ParentQuoteCostLine__c IN ('${chunk.join("','")}')
-    `;
+  const perChunk = await mapWithConcurrency(chunks, QUERY_CONCURRENCY, queryYearRecords);
 
-    const queryResult = await SalesforceService.query(soql);
-
-    for (const record of queryResult.records ?? []) {
+  for (const records of perChunk) {
+    for (const record of records) {
       if (!yearMap.has(record.ParentQuoteCostLine__c)) {
         yearMap.set(record.ParentQuoteCostLine__c, new Map());
       }
@@ -129,17 +194,29 @@ export async function fetchEscalationData(quantityRanges) {
     // Read each sheet from A1 so array indexes line up with real Excel rows and columns.
     // Indexing into getUsedRange().values instead shifts every lookup by that range's own
     // offset whenever a sheet's content does not begin at A1.
+    //
+    // The rows are read in blocks, each with its own sync, because Excel bundles everything
+    // queued since the last sync into a single request: a ten-thousand-row sheet read in one go
+    // is a payload big enough to fail or to sit there long enough to look like a hang. The
+    // blocks are appended in order, so info.values[excelRow - 1] still addresses the real row.
     for (const info of sheetInfo.values()) {
-      const width = info.usedRange.columnIndex + info.usedRange.columnCount;
-      info.range = info.sheet.getRangeByIndexes(0, 0, info.maxRow, width);
-      info.range.load("values");
-    }
+      const width = Math.max(1, info.usedRange.columnIndex + info.usedRange.columnCount);
+      const rowsPerBlock = Math.max(1, Math.floor(MAX_CELLS_PER_READ / width));
+      info.values = [];
 
-    await context.sync();
+      for (let startRow = 0; startRow < info.maxRow; startRow += rowsPerBlock) {
+        const height = Math.min(rowsPerBlock, info.maxRow - startRow);
+        const block = info.sheet.getRangeByIndexes(startRow, 0, height, width);
+        block.load("values");
+        await context.sync();
+
+        for (const row of block.values) info.values.push(row);
+      }
+    }
 
     const columnsBySheet = new Map();
     for (const [sheetName, info] of sheetInfo.entries()) {
-      const headers = info.range.values[HEADER_ROW - 1] ?? [];
+      const headers = info.values[HEADER_ROW - 1] ?? [];
       const escalationColumns = [];
       const quantityColumns = [];
 
@@ -176,7 +253,7 @@ export async function fetchEscalationData(quantityRanges) {
     const seenRows = new Set();
 
     for (const { sheetName, rangeAddress } of ranges) {
-      const values = sheetInfo.get(sheetName).range.values;
+      const values = sheetInfo.get(sheetName).values;
       const { escalationColumns, quantityColumns } = columnsBySheet.get(sheetName);
       const [startRow, endRow] = rangeAddress.split(":").map(Number);
 
@@ -314,7 +391,7 @@ export async function updateEscalations(escalationData) {
       const retriable = pending.filter((t) => (yearMap.get(t.parentId)?.size ?? 0) === 0);
       if (retriable.length === 0) break;
 
-      if (attempt > 1) await delay(RESOLVE_RETRY_DELAY_MS);
+      if (attempt > 1) await delay(RESOLVE_RETRY_DELAY_MS * 2 ** (attempt - 2));
       console.log(
         `Re-reading year ${year} records for ${retriable.length} unresolved cost line(s) (attempt ${attempt + 1}).`
       );
@@ -329,13 +406,27 @@ export async function updateEscalations(escalationData) {
         }
       }
 
-      // The batched read can still come back short; ask for the stragglers one at a time.
-      for (const target of retriable) {
-        if (yearMap.get(target.parentId)?.has(year)) continue;
-        const recordId = await fetchSingleYearId(target.parentId, year);
-        if (!recordId) continue;
-        if (!yearMap.has(target.parentId)) yearMap.set(target.parentId, new Map());
-        yearMap.get(target.parentId).set(year, recordId);
+      // The batched read can still come back short; ask for the stragglers one at a time. This
+      // costs a round trip per record, so it is capped: when thousands are still missing the
+      // cause is Apex not having created them yet, not a short read, and another bulk re-read
+      // on the next attempt is both cheaper and more likely to find them.
+      const stragglers = retriable.filter((t) => !yearMap.get(t.parentId)?.has(year));
+
+      if (stragglers.length > MAX_SINGLE_LOOKUPS) {
+        console.warn(
+          `${stragglers.length} cost line(s) still missing year ${year} after the bulk re-read — ` +
+            `skipping the per-record lookup (cap ${MAX_SINGLE_LOOKUPS}) and re-reading in bulk instead.`
+        );
+      } else {
+        const found = await mapWithConcurrency(stragglers, QUERY_CONCURRENCY, (target) =>
+          fetchSingleYearId(target.parentId, year).then((recordId) => ({ target, recordId }))
+        );
+
+        for (const { target, recordId } of found) {
+          if (!recordId) continue;
+          if (!yearMap.has(target.parentId)) yearMap.set(target.parentId, new Map());
+          yearMap.get(target.parentId).set(year, recordId);
+        }
       }
     }
 
@@ -357,7 +448,8 @@ export async function updateEscalations(escalationData) {
 
     if (updates.length === 0) continue;
 
-    console.log(`Sending ${updates.length} record(s) for year ${year} to Salesforce.`, updates);
+    console.log(`Sending ${updates.length} record(s) for year ${year} to Salesforce.`);
+    if (updates.length <= MAX_LOGGED_RECORDS) console.log(updates);
     const result = await SalesforceService.updateEscalationRecords(updates);
     failures.push(...result.failures);
     attempted += updates.length;

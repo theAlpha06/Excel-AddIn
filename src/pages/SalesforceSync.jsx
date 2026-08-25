@@ -17,6 +17,22 @@ import WorkBookAPI from "../components/WorkBookAPI";
 import { lockEntireSheet, restoreDefaultProtection } from "../utils/lockUnlock";
 import { fetchEscalationData } from "../utils/escalationFetcher";
 
+// JSON.stringify(payload, null, 2) over ten thousand cost rows builds a multi-megabyte string on
+// the UI thread before anything is sent. Past this many rows the object is logged instead — the
+// console expands it lazily, at no cost until someone opens it.
+const MAX_PRETTY_LOGGED_ROWS = 200;
+
+const logQuoteData = (label, data) => {
+  const lines = data?.[0]?.quoteLines ?? [];
+  const costRows = lines.reduce((sum, line) => sum + (line.quoteLineCosts?.length ?? 0), 0);
+
+  if (lines.length + costRows > MAX_PRETTY_LOGGED_ROWS) {
+    console.log(`${label}: ${lines.length} quote line(s), ${costRows} cost row(s)`, data);
+    return;
+  }
+  console.log(`${label}:`, JSON.stringify(data, null, 2));
+};
+
 const SalesforceSync = () => {
   const [pushState, setPushState] = useState(null);
   const [isPushing, setIsPushing] = useState(false);
@@ -437,7 +453,7 @@ const SalesforceSync = () => {
         quoteLines,
       },
     ];
-    console.log(JSON.stringify(quoteData, null, 2));
+    logQuoteData("Prepared quote data", quoteData);
     setQuoteData(quoteData);
     return quoteData;
   };
@@ -510,7 +526,7 @@ const SalesforceSync = () => {
     }
 
     try {
-      console.log("Starting push to Salesforce with data:", JSON.stringify(dataToPush, null, 2));
+      logQuoteData("Starting push to Salesforce with data", dataToPush);
       await SalesforceService.pushDataToSalesforce(dataToPush, async (update) => {
         const recordErrors = update.results?.filter((r) => r.status === "error") ?? [];
         
