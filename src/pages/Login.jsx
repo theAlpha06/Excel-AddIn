@@ -44,8 +44,36 @@ const Login = ({orgType, setOrgType}) => {
         }
     };
 
-    const REACT_APP_CONSUMER_KEY="3MVG9GCMQoQ6rpzQm797ZYHBww6Iye8XtvMqgddHtVjTr83ocGxvaeyGNJuUUf_dDrt688z_OV9wi8c2RC90w";
-    const REACT_APP_REDIRECT_URI="https://localhost:3000/auth-callback.html";
+    // Baked in at build time from .env by webpack's DefinePlugin, so switching connected apps is
+    // an .env edit plus a dev-server restart rather than a code change. Both are empty strings if
+    // .env is missing the key, which startOAuth reports instead of sending Salesforce a bad
+    // client_id.
+    const REACT_APP_CONSUMER_KEY = process.env.REACT_APP_CONSUMER_KEY;
+    const REACT_APP_REDIRECT_URI = process.env.REACT_APP_REDIRECT_URI;
+
+    // The connected app requires PKCE, so the authorize call commits to a one-time secret and the
+    // token exchange has to prove it holds the same one. Anything less is rejected with
+    // invalid_grant. The verifier is generated per attempt and dropped as soon as it is spent — a
+    // reused verifier is the whole failure mode PKCE exists to prevent.
+    const codeVerifierRef = useRef(null);
+
+    const base64UrlEncode = (bytes) =>
+        btoa(String.fromCharCode(...bytes))
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=+$/, "");
+
+    const createCodeVerifier = () => {
+        // 64 random bytes encode to 86 characters, inside Salesforce's 43-128 character window.
+        const bytes = new Uint8Array(64);
+        crypto.getRandomValues(bytes);
+        return base64UrlEncode(bytes);
+    };
+
+    const createCodeChallenge = async (verifier) => {
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+        return base64UrlEncode(new Uint8Array(digest));
+    };
 
     // Closing the auth dialog is a race nobody owns: auth-callback.html closes itself shortly
     // after messageParent, the user can dismiss it, and the Office host tears it down on its
@@ -84,6 +112,16 @@ const Login = ({orgType, setOrgType}) => {
             return;
         }
 
+        const codeVerifier = codeVerifierRef.current;
+        codeVerifierRef.current = null;
+
+        if (!codeVerifier) {
+            setIsLoading(false);
+            setError("Authentication failed: sign-in state was lost. Please try connecting again.");
+            closeDialog();
+            return;
+        }
+
         try {
             const tokenRes = await fetch("http://localhost:5000/salesforce/oauth/token", {
                 method: "POST",
@@ -92,6 +130,7 @@ const Login = ({orgType, setOrgType}) => {
                     code,
                     redirect_uri: REACT_APP_REDIRECT_URI,
                     login_url: LOGIN_URL,
+                    code_verifier: codeVerifier,
                 }),
             });
 
@@ -153,16 +192,34 @@ const Login = ({orgType, setOrgType}) => {
             return;
         }
 
+        if (!REACT_APP_CONSUMER_KEY || !REACT_APP_REDIRECT_URI) {
+            setError(
+                "Connected app is not configured. Set REACT_APP_CONSUMER_KEY and REACT_APP_REDIRECT_URI in .env, then restart the dev server."
+            );
+            return;
+        }
+
+        if (!window.crypto?.subtle) {
+            setError("This host cannot generate a secure sign-in challenge (crypto.subtle is unavailable).");
+            return;
+        }
+
         try {
             setIsLoading(true);
             setError(null);
             authHandledRef.current = false;
+
+            const codeVerifier = createCodeVerifier();
+            const codeChallenge = await createCodeChallenge(codeVerifier);
+            codeVerifierRef.current = codeVerifier;
 
             const authUrl =
                 `${LOGIN_URL}/services/oauth2/authorize?` +
                 `response_type=code` +
                 `&client_id=${REACT_APP_CONSUMER_KEY}` +
                 `&redirect_uri=${encodeURIComponent(REACT_APP_REDIRECT_URI)}` +
+                `&code_challenge=${codeChallenge}` +
+                `&code_challenge_method=S256` +
                 `&prompt=login`;
 
             Office.context.ui.displayDialogAsync(
