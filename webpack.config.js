@@ -39,7 +39,7 @@ async function getHttpsOptions() {
   return { ca: httpsOptions.ca, key: httpsOptions.key, cert: httpsOptions.cert };
 }
 
-const urlDev = "https://localhost:3000";
+const urlDev = "https://localhost:3001";
 const urlProd = "https://your-server-domain.com";
 
 module.exports = async (env, options) => {
@@ -130,7 +130,7 @@ module.exports = async (env, options) => {
         type: "https",
         options: env.WEBPACK_BUILD || options.https !== undefined ? options.https : await getHttpsOptions(),
       },
-      port: process.env.npm_package_config_dev_server_port || 3000,
+      port: process.env.npm_package_config_dev_server_port || 3001,
     },
   };
 
