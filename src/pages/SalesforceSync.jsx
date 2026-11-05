@@ -176,7 +176,11 @@ const SalesforceSync = () => {
 
         return line;
       })
-      .filter((line) => Object.keys(line).length > 1);
+      // `cell` and `rowIndex` are set on every row, so a key count cannot tell a blank row from a
+      // real one. Every row down to the end of the used range used to be sent as a quote line; one
+      // without a Part has no Product2Id, so Salesforce finds no price book entry and rejects it with
+      // "Required fields are missing: [Sales Price]", rolling back the whole push.
+      .filter((line) => String(line.Part ?? "").trim() !== "");
   };
 
   const ensureOpportunity = async (quoteData) => {
