@@ -6,73 +6,19 @@ import { Button } from '@fluentui/react-components';
 import { populateSalesforceIds } from '../utils/populateSalesforceIds';
 import SalesforceSync from './SalesforceSync';
 import { divProperties } from '@fluentui/react';
+import { restoreDefaultProtection } from '../utils/lockUnlock';
 
 const Home = () => {
   const [activeTab, setActiveTab] = useState("profile");
 
+  // Same protection the push restores afterwards, so editing behaves identically before and
+  // after a push.
   const lockFields = async () => {
-    await Excel.run({ delayForCellEdit: true }, async (context) => {
-      const sheet1 = context.workbook.worksheets.getItem(
-        "Final Quote Header & Lines"
-      );
-
-      const worksheets = context.workbook.worksheets;
-      worksheets.load("items/name");
-
-      sheet1.protection.load("protected");
-
-      await context.sync();
-
-      const lineTemplateSheets = worksheets.items.filter(sheet =>
-        sheet.name.startsWith("Template")
-      );
-
-      lineTemplateSheets.forEach(sheet => {
-        sheet.protection.load("protected");
-      });
-
-      await context.sync();
-
-      if (sheet1.protection.protected) {
-        sheet1.protection.unprotect();
-      }
-
-      lineTemplateSheets.forEach(sheet => {
-        if (sheet.protection.protected) {
-          sheet.protection.unprotect();
-        }
-      });
-
-      sheet1.getUsedRange().format.protection.locked = false;
-      sheet1.getRange("A4:A18").format.protection.locked = true;
-      sheet1.getRange("A20").format.protection.locked = true;
-      sheet1.getRange("A21:I21").format.protection.locked = true;
-      sheet1.getRange("G6:G13").format.protection.locked = true;
-      sheet1.getRange("G15:L15").format.protection.locked = true;
-      sheet1.getRange("G5:L5").format.protection.locked = true;
-      sheet1.getRange("G14:I14").format.protection.locked = true;
-
-      lineTemplateSheets.forEach(sheet => {
-        sheet.getUsedRange().format.protection.locked = false;
-        sheet.getRange("A5:D5").format.protection.locked = true;
-      });
-
-      sheet1.protection.protect({
-        allowAutoFilter: true,
-        allowSort: true,
-        allowInsertRows: true,
-      });
-
-      lineTemplateSheets.forEach(sheet => {
-        sheet.protection.protect({
-          allowAutoFilter: true,
-          allowSort: true,
-          allowInsertRows: true,
-        });
-      });
-
-      await context.sync();
-    });
+    try {
+      await restoreDefaultProtection();
+    } catch (err) {
+      console.error("Failed to apply sheet protection:", err);
+    }
   };
 
   useEffect(() => {

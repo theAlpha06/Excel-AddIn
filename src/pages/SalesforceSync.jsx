@@ -14,8 +14,9 @@ import { useDiff } from "../context/DiffContext";
 import { pushDiffToSalesforce } from "../services/DiffSyncService";
 import { clearPendingChanges } from "../utils/diff";
 import WorkBookAPI from "../components/WorkBookAPI";
-import { lockEntireSheet, restoreDefaultProtection } from "../utils/lockUnlock";
+import { lockEntireSheet, restoreDefaultProtection, unprotectSheets } from "../utils/lockUnlock";
 import { fetchEscalationData } from "../utils/escalationFetcher";
+import { findKamEmail, resolveKamUserId } from "../utils/kamLookup";
 
 // JSON.stringify(payload, null, 2) over ten thousand cost rows builds a multi-megabyte string on
 // the UI thread before anything is sent. Past this many rows the object is logged instead — the
@@ -53,7 +54,8 @@ const SalesforceSync = () => {
     (pendingPayload.quoteHeader !== null ||
       (pendingPayload.quoteLineItems?.length ?? 0) > 0 ||
       (pendingPayload.quoteCostItems?.length ?? 0) > 0 ||
-      (pendingPayload.escalations?.length ?? 0) > 0);
+      (pendingPayload.escalations?.length ?? 0) > 0 ||
+      (pendingPayload.costQuantityRanges?.length ?? 0) > 0);
 
   useEffect(() => {
     readExcelData();
@@ -450,6 +452,9 @@ const SalesforceSync = () => {
         contractScope: header["Contract Scope"],
         visitFrequency: header["Visit Frequency"],
         quoteRef: header["Quote Ref"],
+        // Not read by the bulk-insert Apex (it ignores unknown keys); handlePush resolves it to a
+        // User and sets Quote.KAM__c once the quote exists.
+        kamEmail: findKamEmail(header),
         quoteLines,
       },
     ];
@@ -548,7 +553,9 @@ const SalesforceSync = () => {
               status: "Created",
               message: "Salesforce records created"
           });
-          await restoreDefaultProtection();
+          // Column A is locked for the user, so the Ids are written with protection off;
+          // lockEntireSheet() below protects the sheets again.
+          await unprotectSheets();
           try {
             await setPushState({
                 status: "Writing",
@@ -566,6 +573,24 @@ const SalesforceSync = () => {
                   message: "Uploading workbook"
               });
               await uploadWorkbook(quoteId);
+            }
+            // KAM - Account holds an email; Quote.KAM__c is a User lookup. The bulk-insert Apex
+            // does not set it, so it is filled in here once the quote exists. A missing user or a
+            // failed update is reported but does not fail the push.
+            let kamNote = "";
+            const kamEmail = dataToPush?.[0]?.kamEmail;
+            if (quoteId && kamEmail) {
+              try {
+                const kam = await resolveKamUserId(kamEmail);
+                if (kam.userId) {
+                  await SalesforceService.updateRecord("Quote", quoteId, { KAM__c: kam.userId });
+                } else {
+                  kamNote = ` KAM not set: ${kam.reason}.`;
+                }
+              } catch (kamErr) {
+                console.error("Setting Quote.KAM__c failed:", kamErr);
+                kamNote = ` KAM not set: ${kamErr.message}.`;
+              }
             }
             const rangesToSync = quantityRangesRef.current;
             let unmatchedValues = 0;
@@ -592,9 +617,9 @@ const SalesforceSync = () => {
             }
             setPushState({
                 status: "Complete",
-                message: unmatchedValues
+                message: (unmatchedValues
                   ? `Synchronization completed — ${unmatchedValues} value(s) had no matching year record. See console for details.`
-                  : "Synchronization completed successfully"
+                  : "Synchronization completed successfully") + kamNote
             });
             await restoreDefaultProtection();
           } catch (err) {
@@ -665,6 +690,9 @@ const SalesforceSync = () => {
           : null,
         (pendingPayload.escalations?.length ?? 0)
           ? `${pendingPayload.escalations.length} escalation(s)`
+          : null,
+        (pendingPayload.costQuantityRanges?.length ?? 0)
+          ? "cost item quantities"
           : null,
       ]
         .filter(Boolean)

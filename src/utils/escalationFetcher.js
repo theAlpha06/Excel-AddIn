@@ -165,7 +165,11 @@ async function fetchSingleYearId(parentId, year) {
   }
 }
 
-export async function fetchEscalationData(quantityRanges) {
+// `quantitiesOnly` sends just the year quantity columns (ManualQuantity__c) and leaves the
+// escalation columns out. The diff push uses it for cost rows whose Total Quantity or year
+// columns were edited: escalation edits already travel through the diff's own escalation path,
+// and re-sending every escalation on those rows would change how that path behaves.
+export async function fetchEscalationData(quantityRanges, { quantitiesOnly = false } = {}) {
   const ranges = (quantityRanges ?? []).filter((r) => r?.sheetName && r?.rangeAddress);
   if (ranges.length === 0) {
     console.warn("fetchEscalationData: no usable quantity ranges supplied", quantityRanges);
@@ -269,7 +273,7 @@ export async function fetchEscalationData(quantityRanges) {
         const salesforceId = String(row[0] ?? "").trim();
 
         const escalations = {};
-        escalationColumns.forEach(({ index, field, year }) => {
+        (quantitiesOnly ? [] : escalationColumns).forEach(({ index, field, year }) => {
           const num = toNumber(row[index]);
           if (num === null) return;
           escalations[year] = { ...escalations[year], [field]: num };

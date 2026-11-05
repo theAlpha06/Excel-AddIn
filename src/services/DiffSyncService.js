@@ -1,4 +1,29 @@
 import SalesforceService from "./SalesforceService";
+import { fetchEscalationData } from "../utils/escalationFetcher";
+import { resolveKamUserId } from "../utils/kamLookup";
+
+// The diff queues the KAM - Account cell's email under KAM__c; Salesforce needs the User Id.
+// Returns the payload with the email replaced by the Id, or with KAM__c removed when the cell is
+// blank or no active user has that email (the quote's KAM is then left as it is), plus a note
+// for the final status message.
+async function resolveKamField(payload) {
+  const fields = payload.quoteHeader?.fields;
+  if (!fields || !("KAM__c" in fields)) return { payload, kamNote: "" };
+
+  const { KAM__c: email, ...otherFields } = fields;
+  const withFields = (newFields) => ({
+    ...payload,
+    quoteHeader: { ...payload.quoteHeader, fields: newFields },
+  });
+
+  if (!String(email ?? "").trim()) return { payload: withFields(otherFields), kamNote: "" };
+
+  const kam = await resolveKamUserId(email);
+  if (!kam.userId) {
+    return { payload: withFields(otherFields), kamNote: ` KAM not set: ${kam.reason}.` };
+  }
+  return { payload: withFields({ ...otherFields, KAM__c: kam.userId }), kamNote: "" };
+}
 
 const BATCH_SIZE = 25;
 
@@ -178,8 +203,24 @@ async function sendInBatches(records, onProgress, total, doneOffset, allErrors) 
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
-export async function pushDiffToSalesforce(payload, onProgress) {
+export async function pushDiffToSalesforce(rawPayload, onProgress) {
   const allErrors = [];
+
+  // Step 0 — turn the KAM - Account email into the User Id Quote.KAM__c expects
+  let payload = rawPayload;
+  let kamNote = "";
+  try {
+    ({ payload, kamNote } = await resolveKamField(rawPayload));
+  } catch (err) {
+    onProgress({
+      status:  "Failed",
+      message: `Failed to look up the KAM user: ${err.message}`,
+      total:   0,
+      done:    0,
+      errors:  [],
+    });
+    return;
+  }
 
   // Step 1 — flatten standard records
   const standardRecords = flattenPayload(payload);
@@ -209,9 +250,10 @@ export async function pushDiffToSalesforce(payload, onProgress) {
 
   const allRecords = [...standardRecords, ...escalationRecords];
   const total      = allRecords.length;
+  const costQuantityRanges = payload.costQuantityRanges ?? [];
 
-  if (total === 0) {
-    onProgress({ status: "Complete", message: "Nothing to update.", total: 0, done: 0, errors: [] });
+  if (total === 0 && costQuantityRanges.length === 0) {
+    onProgress({ status: "Complete", message: `Nothing to update.${kamNote}`, total: 0, done: 0, errors: [] });
     return;
   }
 
@@ -247,11 +289,51 @@ export async function pushDiffToSalesforce(payload, onProgress) {
     if (failed) return;
   }
 
-  // Step 5 — final status
+  // Step 5 — year quantities of cost rows whose Total Quantity or year columns were edited.
+  // They go through fetchEscalationData, the same code the full push uses: it reads the current
+  // year values from the sheet, resolves each year's QuoteCostItem__c (year 1 is the cost line
+  // itself) and writes ManualQuantity__c one year at a time, ascending, so the org's cascade from
+  // the cost line cannot overwrite a year line's quantity written in the same request.
+  // It runs after the cost-item updates above for the same reason.
+  if (costQuantityRanges.length > 0) {
+    onProgress({
+      status:  "InProgress",
+      message: "Updating cost item quantities…",
+      total,
+      done,
+      errors:  allErrors,
+    });
+
+    try {
+      const result = await fetchEscalationData(costQuantityRanges, { quantitiesOnly: true });
+      (result?.failures ?? []).forEach((f) => {
+        allErrors.push({
+          objectApiName: "QuoteCostItem__c",
+          id:            f.id ?? null,
+          message:       (f.errors ?? []).map((e) => `${e.statusCode ?? e.errorCode}: ${e.message}`).join("; ")
+                           || JSON.stringify(f),
+        });
+      });
+      if (result?.skipped?.length) {
+        console.warn(`${result.skipped.length} quantity value(s) had no matching year record:`, result.skipped);
+      }
+    } catch (err) {
+      onProgress({
+        status:  "Failed",
+        message: `Failed to update cost item quantities: ${err.message}`,
+        total,
+        done,
+        errors:  allErrors,
+      });
+      return;
+    }
+  }
+
+  // Step 6 — final status
   if (allErrors.length > 0) {
     onProgress({
       status:  "Failed",
-      message: `Completed with ${allErrors.length} error(s).`,
+      message: `Completed with ${allErrors.length} error(s).${kamNote}`,
       total,
       done,
       errors:  allErrors,
@@ -259,7 +341,7 @@ export async function pushDiffToSalesforce(payload, onProgress) {
   } else {
     onProgress({
       status:  "Complete",
-      message: `Successfully updated ${done} record(s).`,
+      message: `Successfully updated ${done} record(s).${kamNote}`,
       total,
       done,
       errors:  [],

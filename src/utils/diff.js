@@ -1,3 +1,5 @@
+import { isKamLabel } from "./kamLookup";
+
 const QUOTE_HEADER_MAP = {
   "Opportunity Name *": "Name",
   "Contract Start Date": "StartDate__c",
@@ -174,6 +176,11 @@ const pendingChanges = {
   quoteLineItems: {},
   quoteCostItems: {},
   escalations:    {},
+  // Cost sheet name → Set of Excel rows whose Total Quantity or year (1, 2, 3, …) columns were
+  // edited. Those values have no field mapping of their own — the year split is written by this
+  // add-in as formulas — so the rows are remembered here and their year quantities are read and
+  // sent at push time, the same way the full push does it (fetchEscalationData).
+  costQuantityRows: {},
   meta: {
     quoteExists: false, 
     hasNewRows:  false, 
@@ -259,6 +266,14 @@ async function handleMasterSheetChange(event, context) {
           continue;
         }
 
+        // KAM - Account holds the KAM's email, but Quote.KAM__c is a User lookup. The email is
+        // queued as-is; DiffSyncService resolves it to the User Id when the push runs.
+        if (isKamLabel(label)) {
+          pendingChanges.quoteHeader.KAM__c = String(values[r][c] ?? "").trim();
+          console.log(`  Quote Header: "${label}" → KAM__c (email ${values[r][c]}, resolved at push)`);
+          continue;
+        }
+
         const sfField = resolveField(QUOTE_HEADER_MAP, label);
         if (sfField === undefined) {
           console.warn(`Label "${label}" not in QUOTE_HEADER_MAP — skipping`);
@@ -322,6 +337,7 @@ async function handleCostItemSheetChange(event, context) {
   // bounds how far the sheet's rows and columns actually go.
   const colA = sheet.getRange("A1:A20");
   const usedRange = sheet.getUsedRangeOrNullObject();
+  sheet.load("name");
   colA.load("values");
   usedRange.load(["isNullObject", "rowIndex", "rowCount", "columnIndex", "columnCount"]);
   await context.sync();
@@ -387,6 +403,30 @@ async function handleCostItemSheetChange(event, context) {
       // Never write into the header row or above it: that would overwrite the year headers,
       // and since the formula reads that row it would also make every cell self-referential.
       if (rowNumber > HEADER_ROW) rowsToDistribute.add(rowNumber);
+    }
+  }
+
+  // Rows whose quantities changed — through Total Quantity (which rewrites the year split) or by
+  // typing into a year column directly — are queued for the diff push. Only rows that already
+  // exist in Salesforce (an Id in column A) can be updated; a new row goes through the full push.
+  const quantityColumnSet = new Set([quantityColumnIndex, ...yearColumnIndexes]);
+  for (const area of areas) {
+    const firstCol = area.columnIndex;
+    const lastCol  = area.columnIndex + area.columnCount - 1;
+    let touchesQuantity = false;
+    for (const index of quantityColumnSet) {
+      if (index >= firstCol && index <= lastCol) { touchesQuantity = true; break; }
+    }
+    if (!touchesQuantity) continue;
+
+    for (let r = 0; r < area.rowCount; r++) {
+      const rowNumber = area.rowIndex + 1 + r;
+      if (rowNumber <= HEADER_ROW) continue;
+      if (!String(idValues[rowNumber - 1]?.[0] ?? "").trim()) continue;
+      if (!pendingChanges.costQuantityRows[sheet.name]) {
+        pendingChanges.costQuantityRows[sheet.name] = new Set();
+      }
+      pendingChanges.costQuantityRows[sheet.name].add(rowNumber);
     }
   }
 
@@ -550,7 +590,23 @@ export async function buildPayload() {
     })
   );
 
-  return { quoteHeader, quoteLineItems, quoteCostItems, escalations, meta: { ...pendingChanges.meta } };
+  // One "start:end" range per contiguous block of rows, the shape fetchEscalationData reads.
+  const costQuantityRanges = Object.entries(pendingChanges.costQuantityRows).flatMap(
+    ([sheetName, rows]) =>
+      contiguousRuns([...rows].sort((a, b) => a - b)).map(({ start, length }) => ({
+        sheetName,
+        rangeAddress: `${start}:${start + length - 1}`,
+      }))
+  );
+
+  return {
+    quoteHeader,
+    quoteLineItems,
+    quoteCostItems,
+    escalations,
+    costQuantityRanges,
+    meta: { ...pendingChanges.meta },
+  };
 }
 
 export function clearPendingChanges() {
@@ -558,6 +614,7 @@ export function clearPendingChanges() {
   pendingChanges.quoteLineItems = {};
   pendingChanges.quoteCostItems = {};
   pendingChanges.escalations    = {};
+  pendingChanges.costQuantityRows = {};
   pendingChanges.meta.hasNewRows = false;
 }
 
