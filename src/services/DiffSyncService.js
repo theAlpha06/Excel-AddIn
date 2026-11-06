@@ -1,28 +1,52 @@
 import SalesforceService from "./SalesforceService";
 import { fetchEscalationData } from "../utils/escalationFetcher";
 import { resolveKamUserId } from "../utils/kamLookup";
+import { resolveRailwayQuoteFields } from "../utils/railwayFields";
 
-// The diff queues the KAM - Account cell's email under KAM__c; Salesforce needs the User Id.
-// Returns the payload with the email replaced by the Id, or with KAM__c removed when the cell is
-// blank or no active user has that email (the quote's KAM is then left as it is), plus a note
+// The diff queues some Quote header values raw, because Salesforce needs them converted:
+//  - KAM__c: the KAM - Account email → the KAM user's Id
+//  - AreaServiceManager__c: the Service Area Manager email → that user's Id   (Railways only)
+//  - Special_Contract_Type__c: the typed value → the exact picklist value     (Railways only;
+//    buildPayload has already dropped both for other LOBs)
+// A blank cell, or a value that cannot be resolved, is removed so the Quote keeps its current
+// value and the rest of the header update still goes through; the reason is returned as a note
 // for the final status message.
 async function resolveKamField(payload) {
   const fields = payload.quoteHeader?.fields;
-  if (!fields || !("KAM__c" in fields)) return { payload, kamNote: "" };
+  const queued = ["KAM__c", "AreaServiceManager__c", "Special_Contract_Type__c"];
+  if (!fields || !queued.some((name) => name in fields)) return { payload, kamNote: "" };
 
-  const { KAM__c: email, ...otherFields } = fields;
-  const withFields = (newFields) => ({
-    ...payload,
-    quoteHeader: { ...payload.quoteHeader, fields: newFields },
-  });
+  const {
+    KAM__c: kamEmail,
+    AreaServiceManager__c: asmEmail,
+    Special_Contract_Type__c: contractType,
+    ...resolved
+  } = fields;
+  const notes = [];
 
-  if (!String(email ?? "").trim()) return { payload: withFields(otherFields), kamNote: "" };
-
-  const kam = await resolveKamUserId(email);
-  if (!kam.userId) {
-    return { payload: withFields(otherFields), kamNote: ` KAM not set: ${kam.reason}.` };
+  if (String(kamEmail ?? "").trim()) {
+    const kam = await resolveKamUserId(kamEmail);
+    if (kam.userId) resolved.KAM__c = kam.userId;
+    else notes.push(`KAM not set: ${kam.reason}`);
   }
-  return { payload: withFields({ ...otherFields, KAM__c: kam.userId }), kamNote: "" };
+
+  if ("AreaServiceManager__c" in fields || "Special_Contract_Type__c" in fields) {
+    // LOB is passed as Railways so both fields are accepted here: buildPayload has already
+    // removed Area Service Manager unless the LOB is Railways, and Special Contract Type unless
+    // it is Railways or Oil & Gas.
+    const railway = await resolveRailwayQuoteFields({
+      lob: "Railways",
+      areaServiceManagerEmail: asmEmail,
+      specialContractType: contractType,
+    });
+    Object.assign(resolved, railway.fields);
+    notes.push(...railway.notes);
+  }
+
+  return {
+    payload: { ...payload, quoteHeader: { ...payload.quoteHeader, fields: resolved } },
+    kamNote: notes.length ? ` ${notes.join(". ")}.` : "",
+  };
 }
 
 const BATCH_SIZE = 25;
@@ -224,6 +248,29 @@ export async function pushDiffToSalesforce(rawPayload, onProgress) {
 
   // Step 1 — flatten standard records
   const standardRecords = flattenPayload(payload);
+
+  // Special Contract Type is also kept on the quote's Opportunity (Area Service Manager exists
+  // only on the Quote). By now it is only present for Railways quotes and already matched to a
+  // valid picklist value.
+  const contractType = payload.quoteHeader?.fields?.Special_Contract_Type__c;
+  if (payload.quoteHeader?.id && contractType) {
+    try {
+      const res = await SalesforceService.query(
+        `SELECT OpportunityId FROM Quote WHERE Id = '${payload.quoteHeader.id}' LIMIT 1`
+      );
+      const opportunityId = res?.records?.[0]?.OpportunityId;
+      if (opportunityId) {
+        standardRecords.push({
+          objectApiName: "Opportunity",
+          id: opportunityId,
+          fields: { Special_Contract_Type__c: contractType },
+        });
+      }
+    } catch (err) {
+      console.error("Could not find the quote's Opportunity for Special Contract Type:", err);
+      kamNote += ` Special Contract Type not set on the Opportunity: ${err.message}.`;
+    }
+  }
 
   // Step 2 — resolve escalation records (requires SF queries)
   onProgress({

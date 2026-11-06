@@ -1,5 +1,7 @@
 import { isKamLabel } from "./kamLookup";
-import { isRailwayLob } from "./lob";
+import { isRailwayLob, requiresSpecialContractType } from "./lob";
+import { isAreaServiceManagerLabel, isSpecialContractTypeLabel } from "./railwayFields";
+import { isRcfItemHeader, toCheckbox } from "./rcfItems";
 
 const QUOTE_HEADER_MAP = {
   "Opportunity Name *": "Name",
@@ -275,6 +277,20 @@ async function handleMasterSheetChange(event, context) {
           continue;
         }
 
+        // Railways-only fields. Queued raw: the email is resolved to a User and the picklist
+        // value matched when the push runs (DiffSyncService), and both are dropped in
+        // buildPayload unless the LOB is Railways.
+        if (isAreaServiceManagerLabel(label)) {
+          pendingChanges.quoteHeader.AreaServiceManager__c = String(values[r][c] ?? "").trim();
+          console.log(`  Quote Header: "${label}" → AreaServiceManager__c (email ${values[r][c]}, resolved at push)`);
+          continue;
+        }
+        if (isSpecialContractTypeLabel(label)) {
+          pendingChanges.quoteHeader.Special_Contract_Type__c = String(values[r][c] ?? "").trim();
+          console.log(`  Quote Header: "${label}" → Special_Contract_Type__c = ${values[r][c]}`);
+          continue;
+        }
+
         const sfField = resolveField(QUOTE_HEADER_MAP, label);
         if (sfField === undefined) {
           console.warn(`Label "${label}" not in QUOTE_HEADER_MAP — skipping`);
@@ -514,14 +530,16 @@ async function handleCostItemSheetChange(event, context) {
           continue;
         }
 
-        const sfField = resolveField(QUOTE_COST_ITEM_MAP, label);
+        // RCF Item is matched on normalised text: cost headers often carry a line break.
+        const sfField = isRcfItemHeader(label) ? "RCF_Item__c" : resolveField(QUOTE_COST_ITEM_MAP, label);
         if (!sfField) continue;
 
         if (!pendingChanges.quoteCostItems[sfId]) {
           pendingChanges.quoteCostItems[sfId] = {};
         }
 
-        pendingChanges.quoteCostItems[sfId][sfField] = cellValue;
+        pendingChanges.quoteCostItems[sfId][sfField] =
+          sfField === "RCF_Item__c" ? toCheckbox(cellValue) : cellValue;
         console.log(`  Cost Item: "${label}" → ${sfField} = ${cellValue}`);
       }
     }
@@ -554,7 +572,9 @@ export async function buildPayload() {
     const master = sheets.items.find((s) => s.name === "Final Quote Header & Lines");
     if (master) {
       const idCell = master.getRange("J7");
-      const headerBlock = master.getRange("A1:L20");
+      // Section A grows as fields are added (it ended at row 21 when Service Area Manager and
+      // Special Contract Type were added), so read well past it.
+      const headerBlock = master.getRange("A1:L40");
       idCell.load("values");
       headerBlock.load("values");
       await context.sync();
@@ -568,7 +588,14 @@ export async function buildPayload() {
   // what the sheet held when it was read.
   const lob = "LOB__c" in pendingChanges.quoteHeader ? pendingChanges.quoteHeader.LOB__c : sheetLob;
   const headerFields = { ...pendingChanges.quoteHeader };
-  if (isRailwayLob(lob)) delete headerFields.Sub_LOB__c;
+  if (isRailwayLob(lob)) {
+    delete headerFields.Sub_LOB__c;
+  } else {
+    // Area Service Manager is only tagged on Railways quotes.
+    delete headerFields.AreaServiceManager__c;
+  }
+  // Special Contract Type: Railways and Oil & Gas only (the org forbids it for any other LOB).
+  if (!requiresSpecialContractType(lob)) delete headerFields.Special_Contract_Type__c;
 
   const quoteHeader = Object.keys(headerFields).length > 0 ? {
           objectApiName: OBJECT_API_NAMES.QuoteHeader,

@@ -66,6 +66,20 @@ async function getProtectedSheets(context) {
   return { master, costSheets, costHeaderRows };
 }
 
+// Rows of the SECTION A and SECTION B markers in column A of the master sheet. Falls back to the
+// original layout (Section A on row 4, Section B on row 20) when a marker is missing.
+async function readMasterLayout(context, master) {
+  const colA = master.getRange("A1:A100");
+  colA.load("values");
+  await context.sync();
+  const rowOf = (marker) =>
+    (colA.values ?? []).findIndex((row) => normalizeMarker(row[0]).includes(marker)) + 1;
+  return {
+    sectionARow: rowOf("section a - quote header") || 4,
+    sectionBRow: rowOf("section b - quote line items") || 20,
+  };
+}
+
 // Unprotects each sheet in its own sync. A single failure — typically a sheet protected by hand
 // with a password — used to fail the whole batch, so no sheet was unlocked at all. Returns the
 // sheets that are now unprotected; the rest are left untouched and reported.
@@ -115,6 +129,7 @@ export async function restoreDefaultProtection() {
   await Excel.run({ delayForCellEdit: true }, async (context) => {
     const { master, costSheets, costHeaderRows } = await getProtectedSheets(context);
     const sheets = await unprotectEach(context, [master, ...costSheets].filter(Boolean));
+    const masterLayout = master ? await readMasterLayout(context, master) : null;
 
     for (const sheet of sheets) {
       // Unlock the whole sheet, not just the used range, before re-locking only the ranges
@@ -125,9 +140,14 @@ export async function restoreDefaultProtection() {
       sheet.getRange().format.protection.locked = false;
 
       if (sheet === master) {
-        sheet.getRange("A4:A18").format.protection.locked = true;
-        sheet.getRange("A20").format.protection.locked = true;
-        sheet.getRange("A21:I21").format.protection.locked = true;
+        // Section A labels, the Section B title and the line-item header row. Located from the
+        // markers rather than fixed rows: Section A grew when Service Area Manager and Special
+        // Contract Type were added, moving Section B from row 20 to row 23, and the fixed ranges
+        // then locked the wrong rows.
+        const { sectionARow, sectionBRow } = masterLayout;
+        sheet.getRange(`A${sectionARow}:A${sectionBRow - 2}`).format.protection.locked = true;
+        sheet.getRange(`A${sectionBRow}`).format.protection.locked = true;
+        sheet.getRange(`A${sectionBRow + 1}:I${sectionBRow + 1}`).format.protection.locked = true;
         sheet.getRange("G6:G13").format.protection.locked = true;
         sheet.getRange("G15:L15").format.protection.locked = true;
         sheet.getRange("G5:L5").format.protection.locked = true;

@@ -17,7 +17,13 @@ import WorkBookAPI from "../components/WorkBookAPI";
 import { lockEntireSheet, restoreDefaultProtection, unprotectSheets } from "../utils/lockUnlock";
 import { fetchEscalationData } from "../utils/escalationFetcher";
 import { findKamEmail, resolveKamUserId } from "../utils/kamLookup";
-import { isRailwayLob } from "../utils/lob";
+import { isRailwayLob, requiresSpecialContractType } from "../utils/lob";
+import {
+  matchSpecialContractType,
+  readRailwayHeader,
+  resolveRailwayQuoteFields,
+} from "../utils/railwayFields";
+import { syncRcfItems } from "../utils/rcfItems";
 
 // JSON.stringify(payload, null, 2) over ten thousand cost rows builds a multi-megabyte string on
 // the UI thread before anything is sent. Past this many rows the object is logged instead — the
@@ -253,6 +259,21 @@ const SalesforceSync = () => {
         if (!isRailwayLob(LOB)) {
           opportunityFields.Sub_LOB__c = subLob;
         }
+        // The org's Opportunity validation rule makes Special Contract Type mandatory for
+        // Railways and Oil & Gas (and forbids it otherwise), so it has to be on the insert itself.
+        // Stop here with a clear message rather than let Salesforce reject the Opportunity.
+        if (requiresSpecialContractType(LOB)) {
+          const { specialContractType } = readRailwayHeader(quoteData);
+          const contractType = matchSpecialContractType(specialContractType);
+          if (!contractType) {
+            const message = specialContractType
+              ? `Special Contract Type "${specialContractType}" is not valid. Use RCF Contract, Non-RCF Contract or RCF - Non RCF Combination.`
+              : `Special Contract Type is required when LOB is ${LOB}.`;
+            setError(message);
+            return { error: message };
+          }
+          opportunityFields.Special_Contract_Type__c = contractType;
+        }
         const createRes = await SalesforceService.createRecords("Opportunity", opportunityFields);
         opportunityId = createRes[0].id;
       }
@@ -464,6 +485,8 @@ const SalesforceSync = () => {
         // Not read by the bulk-insert Apex (it ignores unknown keys); handlePush resolves it to a
         // User and sets Quote.KAM__c once the quote exists.
         kamEmail: findKamEmail(header),
+        // Same: LOB, Service Area Manager and Special Contract Type, used for Railways quotes.
+        railwayHeader: readRailwayHeader(header),
         quoteLines,
       },
     ];
@@ -583,25 +606,64 @@ const SalesforceSync = () => {
               });
               await uploadWorkbook(quoteId);
             }
-            // KAM - Account holds an email; Quote.KAM__c is a User lookup. The bulk-insert Apex
-            // does not set it, so it is filled in here once the quote exists. A missing user or a
-            // failed update is reported but does not fail the push.
-            let kamNote = "";
-            const kamEmail = dataToPush?.[0]?.kamEmail;
-            if (quoteId && kamEmail) {
+            // Fields the bulk-insert Apex does not set, filled in here once the quote exists, in a
+            // single Quote update:
+            //  - KAM__c from KAM - Account (email → KAM user)
+            //  - for LOB Railways only: AreaServiceManager__c (email → user) and
+            //    Special_Contract_Type__c
+            // A value that cannot be used, or a failed update, is reported but does not fail
+            // the push.
+            const notes = [];
+            if (quoteId) {
               try {
-                const kam = await resolveKamUserId(kamEmail);
-                if (kam.userId) {
-                  await SalesforceService.updateRecord("Quote", quoteId, { KAM__c: kam.userId });
-                } else {
-                  kamNote = ` KAM not set: ${kam.reason}.`;
+                const quoteFields = {};
+                const kamEmail = dataToPush?.[0]?.kamEmail;
+                if (kamEmail) {
+                  const kam = await resolveKamUserId(kamEmail);
+                  if (kam.userId) quoteFields.KAM__c = kam.userId;
+                  else notes.push(`KAM not set: ${kam.reason}`);
                 }
-              } catch (kamErr) {
-                console.error("Setting Quote.KAM__c failed:", kamErr);
-                kamNote = ` KAM not set: ${kamErr.message}.`;
+                const railway = await resolveRailwayQuoteFields(dataToPush?.[0]?.railwayHeader ?? {});
+                Object.assign(quoteFields, railway.fields);
+                notes.push(...railway.notes);
+                if (Object.keys(quoteFields).length > 0) {
+                  await SalesforceService.updateRecord("Quote", quoteId, quoteFields);
+                }
+                // Special Contract Type also lives on the Opportunity (Area Service Manager does
+                // not), and the sheet shows it in the Opportunity block, so it is set there too.
+                const opportunityId = dataToPush?.[0]?.OpportunityId;
+                if (opportunityId && railway.fields.Special_Contract_Type__c) {
+                  try {
+                    await SalesforceService.updateRecord("Opportunity", opportunityId, {
+                      Special_Contract_Type__c: railway.fields.Special_Contract_Type__c,
+                    });
+                  } catch (oppErr) {
+                    console.error("Setting Opportunity.Special_Contract_Type__c failed:", oppErr);
+                    notes.push(`Special Contract Type not set on the Opportunity: ${oppErr.message}`);
+                  }
+                }
+              } catch (quoteErr) {
+                console.error("Updating KAM / Railway fields on the Quote failed:", quoteErr);
+                notes.push(`Quote KAM / Railway fields not set: ${quoteErr.message}`);
               }
             }
             const rangesToSync = quantityRangesRef.current;
+            // RCF Item has to go before the year quantities below: updating a cost line fires the
+            // org's cascade over its year lines, which would otherwise overwrite the
+            // ManualQuantity__c values written by fetchEscalationData.
+            if (rangesToSync.length > 0) {
+              try {
+                const rcf = await syncRcfItems(rangesToSync);
+                if (rcf.failures.length) {
+                  console.error("RCF Item updates rejected:", rcf.failures);
+                  notes.push(`${rcf.failures.length} RCF Item update(s) rejected — see console`);
+                }
+              } catch (rcfErr) {
+                console.error("Setting RCF Item failed:", rcfErr);
+                notes.push(`RCF Item not set: ${rcfErr.message}`);
+              }
+            }
+            const kamNote = notes.length ? ` ${notes.join(". ")}.` : "";
             let unmatchedValues = 0;
             if(rangesToSync.length > 0) {
               setPushState({
