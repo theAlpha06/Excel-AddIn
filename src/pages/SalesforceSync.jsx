@@ -17,6 +17,7 @@ import WorkBookAPI from "../components/WorkBookAPI";
 import { lockEntireSheet, restoreDefaultProtection, unprotectSheets } from "../utils/lockUnlock";
 import { fetchEscalationData } from "../utils/escalationFetcher";
 import { findKamEmail, resolveKamUserId } from "../utils/kamLookup";
+import { isRailwayLob } from "../utils/lob";
 
 // JSON.stringify(payload, null, 2) over ten thousand cost rows builds a multi-megabyte string on
 // the UI thread before anything is sent. Past this many rows the object is logged instead — the
@@ -239,16 +240,20 @@ const SalesforceSync = () => {
       } else {
         const closeDate = new Date();
         closeDate.setDate(closeDate.getDate() + 60);
-        const createRes = await SalesforceService.createRecords("Opportunity", {
+        const opportunityFields = {
           Name: opportunityName,
           AccountId: accountId,
           CloseDate: closeDate.toISOString().split("T")[0],
           StageName: "Working Platform",
           Pricebook2Id: priceBookId,
           LOB__c: LOB,
-          Sub_LOB__c: subLob,
           ServiceType__c: serviceType,
-        });
+        };
+        // Sub LOB is skipped entirely for Railway; every other LOB sends it as before.
+        if (!isRailwayLob(LOB)) {
+          opportunityFields.Sub_LOB__c = subLob;
+        }
+        const createRes = await SalesforceService.createRecords("Opportunity", opportunityFields);
         opportunityId = createRes[0].id;
       }
 

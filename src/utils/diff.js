@@ -1,4 +1,5 @@
 import { isKamLabel } from "./kamLookup";
+import { isRailwayLob } from "./lob";
 
 const QUOTE_HEADER_MAP = {
   "Opportunity Name *": "Name",
@@ -528,8 +529,22 @@ async function handleCostItemSheetChange(event, context) {
 }
 
 
+// Value next to a header label in the Section A block: the first non-empty cell to the right of
+// the cell whose text is exactly `label` (ignoring case and spacing).
+function findHeaderValue(rows, label) {
+  const wanted = label.toLowerCase();
+  for (const row of rows ?? []) {
+    const labelIndex = row.findIndex((cell) => normalizeHeaderText(cell).toLowerCase() === wanted);
+    if (labelIndex === -1) continue;
+    const value = row.slice(labelIndex + 1).find((cell) => String(cell ?? "").trim() !== "");
+    return value === undefined ? "" : String(value).trim();
+  }
+  return "";
+}
+
 export async function buildPayload() {
   let headerId = null;
+  let sheetLob = "";
 
   await Excel.run({ delayForCellEdit: true }, async (context) => {
     const sheets = context.workbook.worksheets;
@@ -539,17 +554,26 @@ export async function buildPayload() {
     const master = sheets.items.find((s) => s.name === "Final Quote Header & Lines");
     if (master) {
       const idCell = master.getRange("J7");
+      const headerBlock = master.getRange("A1:L20");
       idCell.load("values");
+      headerBlock.load("values");
       await context.sync();
       headerId = String(idCell.values[0][0] ?? "").trim() || null;
       pendingChanges.meta.quoteExists = !!headerId;
+      sheetLob = findHeaderValue(headerBlock.values, "LOB");
     }
   });
 
-  const quoteHeader = Object.keys(pendingChanges.quoteHeader).length > 0 ? {
+  // Sub LOB is never sent when the LOB is Railway. A LOB edit waiting in this same push wins over
+  // what the sheet held when it was read.
+  const lob = "LOB__c" in pendingChanges.quoteHeader ? pendingChanges.quoteHeader.LOB__c : sheetLob;
+  const headerFields = { ...pendingChanges.quoteHeader };
+  if (isRailwayLob(lob)) delete headerFields.Sub_LOB__c;
+
+  const quoteHeader = Object.keys(headerFields).length > 0 ? {
           objectApiName: OBJECT_API_NAMES.QuoteHeader,
           id:            headerId,
-          fields:        { ...pendingChanges.quoteHeader, UniqueText__c: `ExcelSync-${Date.now()}`, isEditable__c: false },
+          fields:        { ...headerFields, UniqueText__c: `ExcelSync-${Date.now()}`, isEditable__c: false },
         }: null;
 
   const quoteLineItems = Object.entries(pendingChanges.quoteLineItems).map(
